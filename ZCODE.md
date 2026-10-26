@@ -19,21 +19,13 @@
 
 ### 2.1 Ремоуты
 
-Репозиторий разведён на локальный форк:
-
 | Remote | URL | Назначение |
 |---|---|---|
-| `origin` | `~/Projects/llm-wiki-fork.git` | свой bare-репозиторий, сюда идут push |
+| `origin` | `https://github.com/necroz/llm-wiki.git` | свой GitHub-форк, сюда идут push |
+| `local` | `~/Projects/llm-wiki-fork.git` | локальный bare-репозиторий, резервная копия |
 | `upstream` | `https://github.com/Pratiyush/llm-wiki.git` | апстрим, push отключён (`no_push`) |
 
-В `origin` запушены `master`, `zcode-integration` и все теги. Когда появится GitHub-форк `necroz/llm-wiki`, переключить `origin` на него:
-
-```bash
-git remote rename origin local
-git remote add origin https://github.com/necroz/llm-wiki.git
-git push -u origin master zcode-integration
-git push origin --tags
-```
+Форк `necroz/llm-wiki` создан; в него запушены `master`, `zcode-integration` и все теги. Апстрим обновляется через `git fetch upstream`, свои изменения уходят в `origin`.
 
 Подготовка: `python3 -m venv .venv && . .venv/bin/activate && pip install -e .`, затем `python3 -m llmwiki init`.
 
