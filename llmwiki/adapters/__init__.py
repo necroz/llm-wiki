@@ -11,15 +11,13 @@ parse them into a stream of records. Adapters register themselves on import.
         ...
 
 Core adapters (always loaded):
-    claude_code, codex_cli
+    claude_code, codex_cli, zcode
 
 Contrib adapters (loaded on demand via --adapter flag):
     chatgpt, copilot_chat, copilot_cli, cursor, gemini_cli, obsidian, opencode
 """
 
 from __future__ import annotations
-
-from typing import Any
 
 from llmwiki.adapters.base import BaseAdapter
 
@@ -96,8 +94,11 @@ def resolve_adapter_name(name: str) -> str | None:
 
 def discover_adapters() -> None:
     """Import core adapters so they register themselves."""
-    from llmwiki.adapters import claude_code  # noqa: F401
-    from llmwiki.adapters import codex_cli  # noqa: F401
+    from llmwiki.adapters import (
+        claude_code,  # noqa: F401
+        codex_cli,  # noqa: F401
+        zcode,  # noqa: F401
+    )
 
 
 def discover_contrib(names: list[str] | None = None) -> None:
