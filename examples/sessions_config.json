@@ -18,9 +18,15 @@
     "replacement_username": "USER",
     "extra_patterns": [
       "(?i)(api[_-]?key|secret|token|bearer|password)[\"'\\s:=]+[\\w\\-\\.]{8,}",
+      "(?i)[a-z][a-z0-9+.-]*://[^/\\s:]+:[^@\\s]+@",
       "sk-[A-Za-z0-9]{20,}",
       "[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\\.[a-zA-Z0-9-.]+"
     ]
+  },
+
+  "_zcode_comment": "ZCode sessions exported by scripts/zcode_export.py into ~/.llmwiki/zcode.",
+  "zcode": {
+    "enabled": true
   },
 
   "truncation": {
@@ -72,7 +78,7 @@
     "synthesize": false
   },
 
-  "_adapters_comment": "Contrib adapters. All disabled by default — enable with: llmwiki sync --adapter <name>",
+  "_adapters_comment": "Contrib adapters are opt-in. A top-level \"<name>\": {\"enabled\": true|false} controls auto-selection; the nested \"adapters\" block only carries per-adapter overrides such as codex_cli roots.",
 
   "web_clipper": {
     "enabled": false,
