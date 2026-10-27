@@ -89,9 +89,11 @@ sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30)
 
 1. `scripts/zcode_export.py` — экспортёр. Читает БД, пишет по одному `.jsonl` на сессию в `~/.llmwiki/zcode/<project-slug>/<session-id>.jsonl`. Идемпотентность — по `session.time_updated` в собственном state-файле. Флаги: `--since YYYY-MM-DD`, `--project <substr>`, `--include-subagents`, `--dry-run`.
 2. `llmwiki/adapters/zcode.py` плюс строка импорта на `:97`.
-3. Конфиг `examples/sessions_config.json`: `adapters.zcode.enabled: true`, `redaction.real_username: "ilashkevich"`.
-4. Первый прогон на одном проекте: `zcode_export --project neuromerch_project`, затем `llmwiki sync`.
-5. Проверить, что `llmwiki adapters` показывает zcode как `active: yes`.
+3. Конфиг `examples/sessions_config.json`: `zcode.enabled: true` (верхний уровень; вложенный `adapters` — только для per-adapter roots). `redaction.real_username` оставить пустым: `load_config()` сам подставляет `$USER`.
+4. Первый прогон на одном проекте: `zcode_export --project neuromerch_project`, затем `llmwiki sync --adapter zcode --project neuromerch_project`.
+5. Проверить, что `llmwiki adapters` показывает zcode как `present: yes`, `active: yes`.
+
+Статус: шаги 1–5 выполнены. Экспортёр — `scripts/zcode_export.py`, адаптер — `llmwiki/adapters/zcode.py`. Первый прогон: 178 сессий, 2 проекта, `site/` собран.
 
 ## 6. Обязательные фильтры
 
@@ -132,12 +134,12 @@ sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30)
 
 ## 9. Чек-лист приёмки
 
-- [ ] `llmwiki adapters` показывает zcode: `present: yes`, `active: yes`
-- [ ] повторный `zcode_export` без изменений не перезаписывает файлы
-- [ ] в `raw/sessions/` нет субагентских сессий без явного флага
-- [ ] `llmwiki sync` создаёт `site/`, сайт открывается через `llmwiki serve`
-- [ ] в экспорте нет reasoning-партов и task-notification
-- [ ] поиск по `raw/` не находит реальных API-ключей
+- [x] `llmwiki adapters` показывает zcode: `present: yes`, `active: yes`
+- [x] повторный `zcode_export` без изменений не перезаписывает файлы
+- [x] в `raw/sessions/` нет субагентских сессий без явного флага
+- [x] `llmwiki sync` создаёт `site/`, сайт открывается через `llmwiki serve`
+- [x] в экспорте нет reasoning-партов и task-notification
+- [x] поиск по `raw/` не находит реальных API-ключей (0 совпадений; имя пользователя остаётся в выводе `ls`/shell-промптов — известное ограничение §8)
 - [ ] MCP-сервер подключается в ZCode и отвечает на `wiki_query`
 
 ## 10. Грабли апстрима (не наши)
