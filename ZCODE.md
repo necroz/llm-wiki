@@ -124,6 +124,8 @@ sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30)
 
 `llmwiki sync` сам вызывает build (`cli.py:172`), поэтому одной команды хватает для актуального `site/`.
 
+Статус: Stop-hook и systemd --user timer настроены (`scripts/zcode_sync_hook.sh`, `llmwiki-zcode.timer`, следующий запуск в 03:30). MCP-сервер добавлен в `~/.zcode/cli/config.json` (`.venv/bin/python -m llmwiki.mcp`) и проверен через stdio: `initialize`, 12 инструментов, `wiki_query` по `neuromerch_project`. Чтобы текущий клиент ZCode подхватил hook и MCP, нужен перезапуск.
+
 ## 8. Риски
 
 - **Пути жёстко привязаны к корню репо**: `DEFAULT_CONFIG_FILE` = `examples/sessions_config.json` (`convert.py:25`), `DEFAULT_STATE_FILE` = `.llmwiki-state.json` (`:24`), `DEFAULT_OUT_DIR` = `raw/sessions` (`:26`). Репозиторий не перемещать либо патчить эти константы.
@@ -131,6 +133,7 @@ sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30)
 - **Инкрементальность в llm-wiki построена на mtime файла** (`convert.py:1461-1516`, ключ `adapter::relpath`). Файл на 2.2 ГБ меняется постоянно, поэтому инкрементальность живёт в экспортёре, а llm-wiki видит спокойный каталог `.jsonl`.
 - **Объём первого прогона**: 728 сессий и 83k сообщений. Начинать с `--since` и одного проекта.
 - Redaction закрывает 17 типов ключей (`convert.py:543`) и имя пользователя, но не пути и не содержимое tool-output. Проверять вывод до публикации.
+- **Потеря `.llmwiki-state.json`** приводит к повторной конвертации. Если `raw/sessions` уже заполнен, конвертер пишет дубликаты с суффиксом `--<hash>`; после сброса состояния проверять `find raw/sessions -name '*--*'`. Тест `test_sync_status_prints_synthesis_hint` больше не пишет в реальный state.
 
 ## 9. Чек-лист приёмки
 
@@ -140,7 +143,7 @@ sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30)
 - [x] `llmwiki sync` создаёт `site/`, сайт открывается через `llmwiki serve`
 - [x] в экспорте нет reasoning-партов и task-notification
 - [x] поиск по `raw/` не находит реальных API-ключей (0 совпадений; имя пользователя остаётся в выводе `ls`/shell-промптов — известное ограничение §8)
-- [ ] MCP-сервер подключается в ZCode и отвечает на `wiki_query`
+- [x] MCP-сервер отвечает на `wiki_query` (stdio smoke: `initialize` + 12 tools; для загрузки в ZCode нужен перезапуск клиента)
 
 ## 10. Грабли апстрима (не наши)
 
