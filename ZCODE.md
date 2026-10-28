@@ -93,7 +93,7 @@ sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30)
 4. Первый прогон на одном проекте: `zcode_export --project neuromerch_project`, затем `llmwiki sync --adapter zcode --project neuromerch_project`.
 5. Проверить, что `llmwiki adapters` показывает zcode как `present: yes`, `active: yes`.
 
-Статус: шаги 1–5 выполнены. Экспортёр — `scripts/zcode_export.py`, адаптер — `llmwiki/adapters/zcode.py`. Первый прогон: 178 сессий, 2 проекта, `site/` собран.
+Статус: шаги 1–5 выполнены. Экспортёр — `scripts/zcode_export.py`, адаптер — `llmwiki/adapters/zcode.py`. Полный scope: 770 сессий, 44 проекта; `site/` — 905 HTML / 299 МБ (после текущих сессий корпус вырос до 772).
 
 ## 6. Обязательные фильтры
 
@@ -124,16 +124,16 @@ sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30)
 
 `llmwiki sync` сам вызывает build (`cli.py:172`), поэтому одной команды хватает для актуального `site/`.
 
-Статус: Stop-hook и systemd --user timer настроены (`scripts/zcode_sync_hook.sh`, `llmwiki-zcode.timer`, следующий запуск в 03:30). MCP-сервер добавлен в `~/.zcode/cli/config.json` (`.venv/bin/python -m llmwiki.mcp`) и проверен через stdio: `initialize`, 12 инструментов, `wiki_query` по `neuromerch_project`. Чтобы текущий клиент ZCode подхватил hook и MCP, нужен перезапуск.
+Статус: Stop-hook и systemd --user timer настроены (`scripts/zcode_sync_hook.sh`, `llmwiki-zcode.timer`, следующий запуск в 03:30); scope — все проекты. MCP-сервер добавлен в `~/.zcode/cli/config.json` (`.venv/bin/python -m llmwiki.mcp`) и проверен через stdio: `initialize`, 12 инструментов, `wiki_query` по `neuromerch_project`. Первый полный прогон — 770 сессий, 44 проекта, 1 м 8 с. Чтобы текущий клиент ZCode подхватил hook и MCP, нужен перезапуск.
 
 ## 8. Риски
 
 - **Пути жёстко привязаны к корню репо**: `DEFAULT_CONFIG_FILE` = `examples/sessions_config.json` (`convert.py:25`), `DEFAULT_STATE_FILE` = `.llmwiki-state.json` (`:24`), `DEFAULT_OUT_DIR` = `raw/sessions` (`:26`). Репозиторий не перемещать либо патчить эти константы.
 - **Схема БД ZCode — внутренний контракт.** В `schema_migration` уже 24 миграции. Экспортёр должен проверять наличие колонок и падать с понятной ошибкой, а не молча терять данные.
 - **Инкрементальность в llm-wiki построена на mtime файла** (`convert.py:1461-1516`, ключ `adapter::relpath`). Файл на 2.2 ГБ меняется постоянно, поэтому инкрементальность живёт в экспортёре, а llm-wiki видит спокойный каталог `.jsonl`.
-- **Объём первого прогона**: 728 сессий и 83k сообщений. Начинать с `--since` и одного проекта.
+- **Объём полного прогона (770 сессий)**: JSONL 245 МБ, raw 42 МБ, site 299 МБ, 44–45 проектов; экспорт + sync + build — 1 м 8 с.
 - Redaction закрывает 17 типов ключей (`convert.py:543`) и имя пользователя, но не пути и не содержимое tool-output. Проверять вывод до публикации.
-- **Потеря `.llmwiki-state.json`** приводит к повторной конвертации. Если `raw/sessions` уже заполнен, конвертер пишет дубликаты с суффиксом `--<hash>`; после сброса состояния проверять `find raw/sessions -name '*--*'`. Тест `test_sync_status_prints_synthesis_hint` больше не пишет в реальный state.
+- **Потеря `.llmwiki-state.json`** приводит к повторной конвертации. Если `raw/sessions` уже заполнен, конвертер пишет дубликаты с суффиксом `--<hash>`; после сброса состояния проверять `find raw/sessions -name '*--*'`. Тест `test_sync_status_prints_synthesis_hint` больше не пишет в реальный state. Изменённая сессия при наличии ключа в state обновляет canonical-файл на месте (фикс `convert.py`, тест `test_changed_source_updates_canonical_in_place`).
 
 ## 9. Чек-лист приёмки
 
@@ -142,7 +142,7 @@ sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30)
 - [x] в `raw/sessions/` нет субагентских сессий без явного флага
 - [x] `llmwiki sync` создаёт `site/`, сайт открывается через `llmwiki serve`
 - [x] в экспорте нет reasoning-партов и task-notification
-- [x] поиск по `raw/` не находит реальных API-ключей (0 совпадений; имя пользователя остаётся в выводе `ls`/shell-промптов — известное ограничение §8)
+- [x] поиск по `raw/` не находит реальных API-ключей (0 совпадений на 772 сессиях; имя пользователя остаётся в 407 файлах tool-output — известное ограничение §8)
 - [x] MCP-сервер отвечает на `wiki_query` (stdio smoke: `initialize` + 12 tools; для загрузки в ZCode нужен перезапуск клиента)
 
 ## 10. Грабли апстрима (не наши)
