@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -154,3 +155,11 @@ def test_example_config_redacts_url_credentials() -> None:
     redacted = Redactor(config)("postgresql://app:s3cr3tP@db-host/internal")
     assert "s3cr3tP" not in redacted
     assert "<REDACTED>" in redacted
+
+
+def test_zcode_autosync_hook_is_valid_bash() -> None:
+    script = REPO_ROOT / "scripts" / "zcode_sync_hook.sh"
+    assert script.exists(), f"missing hook script: {script}"
+    assert os.access(script, os.X_OK), "hook script must be executable"
+    result = subprocess.run(["bash", "-n", str(script)], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
