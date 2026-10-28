@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # Refresh the llmwiki ZCode corpus after a ZCode Stop event or from a timer.
 #
-# Project scope: LLMWIKI_ZCODE_PROJECT (default: neuromerch_project).
-# Set it to an empty string to export every project:
-#   LLMWIKI_ZCODE_PROJECT= scripts/zcode_sync_hook.sh --build
+# Project scope: LLMWIKI_ZCODE_PROJECT (default: all projects).
+# Set it to a project slug/substring to narrow the export:
+#   LLMWIKI_ZCODE_PROJECT=neuromerch_project scripts/zcode_sync_hook.sh --build
 #
 # Stop hooks run detached; flock serialises them with the nightly timer.
 set -uo pipefail
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-PROJECT="${LLMWIKI_ZCODE_PROJECT-neuromerch_project}"
+PROJECT="${LLMWIKI_ZCODE_PROJECT:-}"
 BUILD=0
 case "${1:-}" in
   --build) BUILD=1 ;;
