@@ -133,7 +133,10 @@ def _raw_write_guard(
     False, raise ``FileExistsError`` so the caller can quarantine +
     skip instead of silently overwriting.
 
-    Bypass only via the existing ``llmwiki sync --force`` flag.
+    Callers pass ``force=True`` both for the explicit ``sync --force``
+    flag and when the state file records this source as the writer.
+    The second case is what lets a changed session update its own
+    canonical page instead of growing a ``--<hash>`` duplicate.
     """
     if not out_path.exists() or force:
         return
@@ -1588,7 +1591,7 @@ def convert_all(
             #       outputs.
             needs_disambig = not dry_run and (
                 out_name in names_written_this_run
-                or (not force and out_path.exists() and state.get(key) != mtime)
+                or (not force and out_path.exists() and key not in state)
             )
             if needs_disambig:
                 out_name = flat_output_name(
@@ -1623,7 +1626,7 @@ def convert_all(
             else:
                 out_path.parent.mkdir(parents=True, exist_ok=True)
                 try:
-                    _raw_write_guard(out_path, force=force, source=str(path),
+                    _raw_write_guard(out_path, force=force or key in state, source=str(path),
                                      adapter_name=cls.name)
                 except FileExistsError as e:
                     errors += 1

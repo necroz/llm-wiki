@@ -10,14 +10,21 @@ getting quarantined.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+import os
+import time
 from pathlib import Path
 
 from llmwiki import convert as c
 
 
-def _write_jsonl(path: Path, session_id: str, iso_ts: str,
-                 slug: str = "shared-slug") -> None:
+def _write_jsonl(
+    path: Path,
+    session_id: str,
+    iso_ts: str,
+    slug: str = "shared-slug",
+    user_text: str = "hi",
+    assistant_text: str = "hello",
+) -> None:
     """Seed a minimal claude_code-shaped jsonl.
 
     ``slug`` on the first record pins derive_session_slug so two
@@ -32,13 +39,13 @@ def _write_jsonl(path: Path, session_id: str, iso_ts: str,
             "timestamp": iso_ts,
             "cwd": "/tmp",
             "gitBranch": "main",
-            "message": {"role": "user", "content": "hi"},
+            "message": {"role": "user", "content": user_text},
         }) + "\n"
         + json.dumps({
             "type": "assistant",
             "sessionId": session_id,
             "timestamp": iso_ts,
-            "message": {"role": "assistant", "content": "hello"},
+            "message": {"role": "assistant", "content": assistant_text},
         }) + "\n",
         encoding="utf-8",
     )
@@ -340,3 +347,50 @@ def test_disambiguated_source_file_matches_disk(tmp_path, monkeypatch):
     assert disambig_files, (
         f"test setup failed to produce disambiguation: {[p.name for p in outs]}"
     )
+
+
+def test_changed_source_updates_canonical_in_place(tmp_path, monkeypatch):
+    """A changed session must overwrite its own canonical page.
+
+    Regression for autosync: the state key records this source as the
+    writer, so a new mtime means "update", not "collision". Before the
+    fix, every changed session produced a second ``--<hash>`` page.
+    """
+    home, proj, out_dir, state = _seed_env(tmp_path)
+    src = proj / "s.jsonl"
+    _write_jsonl(
+        src, "sess-changed", "2026-04-16T10:00:00Z", user_text="first prompt"
+    )
+    _patch(monkeypatch, home, out_dir, state)
+    c.discover_adapters()
+    c.convert_all(
+        adapters=["claude_code"],
+        out_dir=out_dir,
+        state_file=state,
+        include_current=True,
+    )
+
+    first = sorted(out_dir.rglob("*.md"))
+    assert len(first) == 1, [p.name for p in first]
+    assert "--" not in first[0].name
+
+    _write_jsonl(
+        src, "sess-changed", "2026-04-16T10:00:00Z", user_text="second prompt"
+    )
+    future = time.time() + 10
+    os.utime(src, (future, future))
+
+    c.convert_all(
+        adapters=["claude_code"],
+        out_dir=out_dir,
+        state_file=state,
+        include_current=True,
+    )
+
+    second = sorted(out_dir.rglob("*.md"))
+    assert second == first, (
+        f"changed source duplicated pages: {[p.name for p in second]}"
+    )
+    body = second[0].read_text(encoding="utf-8")
+    assert "second prompt" in body
+    assert "first prompt" not in body
