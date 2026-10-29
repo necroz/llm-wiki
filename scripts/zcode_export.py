@@ -56,7 +56,8 @@ def project_slug_for_directory(directory: str, home: Path | None = None) -> str:
 
     Projects under ``~/Projects`` keep their top-level name, so sessions
     started in a nested worktree still belong to the same project.
-    ``~/.zcode/workspace/<name>`` becomes ``workspace_<name>``.
+    ``~/.zcode/workspace/<name>`` becomes ``workspace_<name>``; one-off
+    ``draft-*`` workspaces collapse into ``workspace_drafts``.
     """
     home = Path(home or Path.home())
     raw = str(directory or "").strip()
@@ -81,7 +82,10 @@ def project_slug_for_directory(directory: str, home: Path | None = None) -> str:
     else:
         parts = relative_parts(home / ".zcode" / "workspace")
         if parts:
-            name = f"workspace_{parts[0]}"
+            workspace = parts[0]
+            if workspace.startswith("draft-"):
+                workspace = "drafts"
+            name = f"workspace_{workspace}"
         else:
             parts = relative_parts(home)
             name = parts[0] if parts and len(parts) == 1 else path.name
