@@ -533,6 +533,7 @@ function main() {
         n.type + ' · ' + n.in_degree + ' inbound, ' + n.out_degree + ' outbound' +
         (n.path ? '\nClick to open ' + n.path : ''),
       path: n.path,
+      site_url: n.site_url,
       type: n.type,
     };
   }));
