@@ -335,6 +335,51 @@ def ensure_project_stubs(
     return written
 
 
+def ensure_projects_index(meta_dir: Path) -> Path | None:
+    """Regenerate ``wiki/projects/index.md`` from the project stubs.
+
+    The index is a graph hub: every project page gets an inbound
+    ``[[wikilink]]`` so the wiki graph no longer shows the auto-seeded
+    stubs as orphans. Project pages stay hand-editable; only the index
+    is regenerated.
+    """
+    meta_dir = Path(meta_dir)
+    if not meta_dir.exists():
+        return None
+    stubs = sorted(p for p in meta_dir.glob("*.md") if p.name != "index.md")
+    if not stubs:
+        return None
+
+    lines = [
+        "---",
+        'title: "Projects"',
+        "type: index",
+        "tags: [index, projects]",
+        f"last_updated: {datetime.now(timezone.utc).date().isoformat()}",
+        "---",
+        "",
+        "# Projects",
+        "",
+        "Auto-generated project index. Links connect the wiki graph; "
+        "edit the individual project pages, not this file.",
+        "",
+    ]
+    for stub in stubs:
+        try:
+            meta, _ = parse_frontmatter(stub.read_text(encoding="utf-8"))
+        except OSError:
+            meta = {}
+        description = str(meta.get("description") or "").strip()
+        if description:
+            lines.append(f"- [[{stub.stem}]] — {description}")
+        else:
+            lines.append(f"- [[{stub.stem}]]")
+
+    target = meta_dir / "index.md"
+    target.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    return target
+
+
 # ─── markdown normaliser + renderer ───────────────────────────────────────
 
 _H1_LINE_RE = re.compile(r"^#\s+.*\n", re.MULTILINE)
@@ -2365,6 +2410,9 @@ def build_site(
         stubs_written = ensure_project_stubs(groups, PROJECTS_META_DIR)
         if stubs_written:
             print(f"  seeded {len(stubs_written)} new wiki/projects/ stubs")
+        index_written = ensure_projects_index(PROJECTS_META_DIR)
+        if index_written:
+            print(f"  updated {index_written.relative_to(REPO_ROOT)}")
 
     # Reset output dir (clear contents only — the HTTP server may be cwd'd here)
     # #py-m12 (#598): drop ignore_errors=True. A failure to remove a
@@ -2542,8 +2590,9 @@ def build_site(
     # v1.1 (#118): copy the interactive knowledge graph into the site
     # so the "Graph" nav link works without a separate `llmwiki graph` step.
     try:
-        from llmwiki.graph import copy_to_site as copy_graph_to_site
-        graph_path = copy_graph_to_site(out_dir)
+        from llmwiki.graph import build_session_graph, copy_to_site as copy_graph_to_site
+        session_graph = build_session_graph(raw_dir=RAW_SESSIONS, verify_site_dir=out_dir)
+        graph_path = copy_graph_to_site(out_dir, graph=session_graph)
         if graph_path:
             print(f"  wrote {graph_path.relative_to(out_dir.parent)} (interactive graph viewer)")
     except (OSError, ValueError, RuntimeError) as e:

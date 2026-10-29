@@ -16,6 +16,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import html as _html
 import json
 import re
 import sys
@@ -23,9 +24,11 @@ from pathlib import Path
 from typing import Any, Optional
 
 from llmwiki import REPO_ROOT
+from llmwiki._frontmatter import parse_frontmatter
 
 WIKI_DIR = REPO_ROOT / "wiki"
 GRAPH_DIR = REPO_ROOT / "graph"
+RAW_SESSIONS_DIR = REPO_ROOT / "raw" / "sessions"
 
 WIKILINK_RE = re.compile(r"\[\[([^\]|]+)(?:\|[^\]]*)?\]\]")
 
@@ -59,7 +62,9 @@ def _compute_site_url(text: str, rel_parts: tuple[str, ...],
     if slug == "index" and len(rel_parts) == 1:
         return "index.html"
     if len(rel_parts) >= 2 and rel_parts[0] == "projects":
-        return f"projects/{slug}.html"
+        # Keep the nested path: projects/<slug>.md -> projects/<slug>.html
+        # also handles the generated projects/index.md hub.
+        return Path(*rel_parts).with_suffix(".html").as_posix()
     if len(rel_parts) >= 2 and rel_parts[0] == "sources":
         # Find the matching site/sessions/ path via the source_file frontmatter.
         m = re.search(r"^source_file:\s*(.+)$", text, re.MULTILINE)
@@ -94,7 +99,13 @@ def scan_pages() -> dict[str, dict[str, Any]]:
             rel = p.relative_to(WIKI_DIR)
             type_ = rel.parts[0] if len(rel.parts) > 1 else "root"
         except ValueError:
+            rel = Path(p.name)
             type_ = "root"
+        # A nested index.md (wiki/projects/index.md) collides with the
+        # root wiki/index.md if both use the bare stem. Keep the path
+        # form for the later page so both nodes survive.
+        if slug in pages:
+            slug = rel.with_suffix("").as_posix()
         title = slug
         try:
             text = p.read_text(encoding="utf-8")
@@ -196,6 +207,124 @@ def build_graph(verify_site_dir: Path | None = None) -> dict[str, Any]:
     }
 
 
+def _session_label(value: str) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not text:
+        return "session"
+    return text if len(text) <= 48 else text[:47] + "…"
+
+
+def build_session_graph(
+    raw_dir: Path | None = None,
+    verify_site_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Build a project → session graph from ``raw/sessions/*.md``.
+
+    Unlike :func:`build_graph` (the wiki-layer wikilink graph), this view
+    is for the actual corpus: every session is a node, every project is a
+    hub, and each project→session edge is drawn from the session's
+    ``project:`` frontmatter. Session labels use the redacted
+    ``description`` so the graph is readable instead of showing UUIDs.
+    """
+    raw_dir = Path(raw_dir) if raw_dir is not None else RAW_SESSIONS_DIR
+    nodes: list[dict[str, Any]] = []
+    edges: list[dict[str, Any]] = []
+    projects: dict[str, dict[str, Any]] = {}
+
+    if raw_dir.exists():
+        for path in sorted(raw_dir.rglob("*.md")):
+            if path.stem == "README":
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            try:
+                meta, _ = parse_frontmatter(text)
+            except Exception:
+                continue
+            if not isinstance(meta, dict):
+                continue
+            if str(meta.get("type") or "source") != "source":
+                continue
+            project = str(meta.get("project") or "").strip()
+            slug = str(meta.get("slug") or meta.get("sessionId") or path.stem).strip()
+            if not project or not slug:
+                continue
+
+            project_id = f"project:{project}"
+            project_node = projects.get(project_id)
+            if project_node is None:
+                project_node = {
+                    "id": project_id,
+                    "label": project,
+                    "type": "projects",
+                    "path": f"wiki/projects/{project}.md",
+                    "site_url": f"projects/{project}.html",
+                    "in_degree": 0,
+                    "out_degree": 0,
+                    "value": 0,
+                    "cluster": project,
+                    "orphan": False,
+                }
+                projects[project_id] = project_node
+                nodes.append(project_node)
+
+            source_file = str(meta.get("source_file") or f"raw/sessions/{path.name}")
+            session_id = f"session:{slug}"
+            if any(node["id"] == session_id for node in nodes):
+                session_id = f"session:{slug}:{len(nodes)}"
+            label = _session_label(
+                str(meta.get("description") or meta.get("title") or slug)
+            )
+            nodes.append(
+                {
+                    "id": session_id,
+                    "label": label,
+                    "type": "sources",
+                    "path": source_file,
+                    "site_url": f"sessions/{project}/{Path(source_file).stem}.html",
+                    "in_degree": 1,
+                    "out_degree": 0,
+                    "value": 1,
+                    "cluster": project,
+                    "orphan": False,
+                }
+            )
+            edges.append({"source": project_id, "target": session_id})
+            project_node["out_degree"] += 1
+
+    if verify_site_dir is not None:
+        for node in nodes:
+            node["site_url"] = _verify_site_url(node.get("site_url"), verify_site_dir)
+
+    for project_node in projects.values():
+        project_node["value"] = project_node["out_degree"]
+
+    top_projects = sorted(
+        projects.values(), key=lambda node: (-node["out_degree"], node["label"])
+    )[:5]
+    return {
+        "title": "llmwiki — Sessions & Projects",
+        "cluster_by": "project",
+        "nodes": nodes,
+        "edges": edges,
+        "broken_edges": [],
+        "stats": {
+            "total_pages": len(nodes),
+            "total_edges": len(edges),
+            "broken_edges": 0,
+            "orphans": [
+                node["id"]
+                for node in nodes
+                if node["in_degree"] == 0 and node["out_degree"] == 0
+            ],
+            "top_linked": top_projects,
+            "top_linking": top_projects,
+        },
+    }
+
+
 def write_json(graph: dict[str, Any], out_path: Path) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(graph, indent=2), encoding="utf-8")
@@ -241,6 +370,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     --g-node-entities: #2563eb;
     --g-node-concepts: #059669;
     --g-node-syntheses: #d97706;
+    --g-node-projects: #db2777;
     --g-node-root: #64748b;
     --g-orphan: #ef4444;
     --g-edge: rgba(148, 163, 184, 0.4);
@@ -257,6 +387,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     --g-node-entities: #2563eb;
     --g-node-concepts: #059669;
     --g-node-syntheses: #d97706;
+    --g-node-projects: #db2777;
     --g-node-root: #64748b;
     --g-orphan: #dc2626;
     --g-edge: rgba(100, 116, 139, 0.45);
@@ -420,6 +551,7 @@ __SITE_NAV__
 <div id="network">
   <div id="offline-notice">vis-network failed to load — check your connection or host the library locally.</div>
   <div id="legend" aria-label="Node color legend">
+    <div class="row"><span class="dot" style="background: var(--g-node-projects)"></span>projects</div>
     <div class="row"><span class="dot" style="background: var(--g-node-source)"></span>sources</div>
     <div class="row"><span class="dot" style="background: var(--g-node-entities)"></span>entities</div>
     <div class="row"><span class="dot" style="background: var(--g-node-concepts)"></span>concepts</div>
@@ -488,6 +620,7 @@ function main() {
     entities: () => cssVar('--g-node-entities'),
     concepts: () => cssVar('--g-node-concepts'),
     syntheses: () => cssVar('--g-node-syntheses'),
+    projects: () => cssVar('--g-node-projects'),
     root: () => cssVar('--g-node-root'),
   };
   const orphanColor = () => cssVar('--g-orphan');
@@ -507,17 +640,18 @@ function main() {
 
   const hubsEl = document.getElementById('s-hubs');
   (stats.top_linked || []).slice(0, 5).forEach(n => {
-    if (!n || n.in_degree === 0) return;
+    const degree = n ? (n.value ?? n.in_degree ?? 0) : 0;
+    if (!n || degree === 0) return;
     const row = document.createElement('div');
     row.className = 'hub-item';
-    row.innerHTML = '<b>' + String(n.in_degree).padStart(3) + '</b> ' +
-      escapeHtml(n.id);
+    row.innerHTML = '<b>' + String(degree).padStart(3) + '</b> ' +
+      escapeHtml(n.label || n.id);
     hubsEl.appendChild(row);
   });
 
   // ─── Build vis DataSets ──────────────────────────────────────────────
   const nodes = new vis.DataSet(GRAPH.nodes.map(n => {
-    const isOrphan = n.in_degree === 0;
+    const isOrphan = n.orphan !== undefined ? n.orphan : n.in_degree === 0;
     return {
       id: n.id,
       label: n.label,
@@ -527,8 +661,9 @@ function main() {
         highlight: { background: cssVar('--g-highlight'), border: cssVar('--g-highlight') },
       },
       borderWidth: isOrphan ? 3 : 1,
-      value: Math.max(n.in_degree, 1),
+      value: Math.max(n.value ?? n.in_degree, 1),
       group: n.type,
+      cluster: n.cluster,
       title:
         n.type + ' · ' + n.in_degree + ' inbound, ' + n.out_degree + ' outbound' +
         (n.path ? '\nClick to open ' + n.path : ''),
@@ -753,31 +888,43 @@ function main() {
   if (searchInput) searchInput.addEventListener('input', e => applyFilter(e.target.value));
 
   // ─── Cluster toggle ──────────────────────────────────────────────────
-  let clusterMode = 'off';
-  const clusterBtn = document.getElementById('cluster-toggle');
-  if (clusterBtn) clusterBtn.addEventListener('click', () => {
-    clusterMode = clusterMode === 'off' ? 'type' : 'off';
-    document.getElementById('cluster-mode').textContent = clusterMode;
-    if (clusterMode === 'type') {
-      const types = [...new Set(GRAPH.nodes.map(n => n.type))];
-      types.forEach(t => {
+  const clusterKey = n =>
+    (GRAPH.cluster_by === 'project' && n.cluster) ? n.cluster : n.type;
+  const clusterName = GRAPH.cluster_by === 'project' ? 'project' : 'type';
+  function applyClusterMode(mode) {
+    if (mode === clusterName) {
+      const groups = [...new Set(GRAPH.nodes.map(clusterKey))];
+      groups.forEach(g => {
         try {
           network.cluster({
-            joinCondition: n => n.group === t,
+            joinCondition: n => clusterKey(n) === g,
             clusterNodeProperties: {
-              id: 'cluster:' + t,
-              label: t + ' (' + GRAPH.nodes.filter(x => x.type === t).length + ')',
-              color: { background: (colors[t] || colors.root)() },
+              id: 'cluster:' + g,
+              label: g + ' (' + GRAPH.nodes.filter(x => clusterKey(x) === g).length + ')',
+              color: {
+                background: GRAPH.cluster_by === 'project'
+                  ? colors.projects()
+                  : (colors[g] || colors.root)(),
+              },
             },
           });
-        } catch (_) { /* empty type */ }
+        } catch (_) { /* empty group */ }
       });
     } else {
       GRAPH.nodes.forEach(n => {
-        const id = 'cluster:' + n.type;
+        const id = 'cluster:' + clusterKey(n);
         if (network.isCluster(id)) network.openCluster(id);
       });
     }
+  }
+  let clusterMode = GRAPH.cluster_by === 'project' ? 'project' : 'off';
+  document.getElementById('cluster-mode').textContent = clusterMode;
+  if (clusterMode !== 'off') applyClusterMode(clusterMode);
+  const clusterBtn = document.getElementById('cluster-toggle');
+  if (clusterBtn) clusterBtn.addEventListener('click', () => {
+    clusterMode = clusterMode === 'off' ? clusterName : 'off';
+    document.getElementById('cluster-mode').textContent = clusterMode;
+    applyClusterMode(clusterMode);
   });
 }
 
@@ -807,8 +954,12 @@ def write_html(graph: dict[str, Any], out_path: Path) -> None:
     # (build.py imports graph.copy_to_site).
     from llmwiki.build import nav_bar
     site_nav_html = nav_bar(active="graph", link_prefix="")
+    title = _html.escape(
+        str(graph.get("title") or "llmwiki — Knowledge Graph"), quote=False
+    )
     html = (
         HTML_TEMPLATE
+        .replace("llmwiki — Knowledge Graph", title)
         .replace("__GRAPH_JSON__", payload)
         .replace("__SITE_NAV__", site_nav_html)
     )
