@@ -668,6 +668,7 @@ function main() {
         n.type + ' · ' + n.in_degree + ' inbound, ' + n.out_degree + ' outbound' +
         (n.path ? '\nClick to open ' + n.path : ''),
       path: n.path,
+      site_url: n.site_url,
       type: n.type,
     };
   }));
@@ -702,10 +703,24 @@ function main() {
   // transient tooltip instead of opening a broken link.
   network.on('click', params => {
     if (!params.nodes || !params.nodes.length) return;
-    const node = nodes.get(params.nodes[0]);
+    const clickedId = params.nodes[0];
+    // Cluster nodes live outside the vis `nodes` DataSet. For the
+    // project-clustered session graph, clicking a cluster opens its
+    // project page; type clusters in the wiki graph stay non-navigable.
+    if (typeof clickedId === 'string' && clickedId.startsWith('cluster:')) {
+      if (GRAPH.cluster_by === 'project') {
+        const project = clickedId.slice('cluster:'.length);
+        const projectNode = GRAPH.nodes.find(n => n.id === 'project:' + project);
+        if (projectNode && projectNode.site_url) {
+          window.location.assign(projectNode.site_url);
+        }
+      }
+      return;
+    }
+    const node = nodes.get(clickedId);
     if (!node) return;
     if (node.site_url) {
-      window.open(node.site_url, '_blank', 'noopener');
+      window.location.assign(node.site_url);
     } else {
       _flashNoSiteTooltip(node, params.event);
     }
@@ -827,7 +842,7 @@ function main() {
         // #328: use precomputed site_url so nodes without a compiled
         // page degrade gracefully instead of 404.
         if (node.site_url) {
-          window.open(node.site_url, '_blank', 'noopener');
+          window.location.assign(node.site_url);
         } else {
           alert(node.label + ' — no compiled page exists for this node. '
             + 'Entities, concepts, and nav files live in wiki/ but aren\u2019t rendered as standalone site pages.');
@@ -901,6 +916,9 @@ function main() {
             clusterNodeProperties: {
               id: 'cluster:' + g,
               label: g + ' (' + GRAPH.nodes.filter(x => clusterKey(x) === g).length + ')',
+              title: GRAPH.cluster_by === 'project'
+                ? 'Project ' + g + '\nClick to open project page'
+                : g,
               color: {
                 background: GRAPH.cluster_by === 'project'
                   ? colors.projects()
