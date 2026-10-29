@@ -173,6 +173,11 @@ def test_project_graph_template_starts_clustered() -> None:
     assert "applyClusterMode(clusterMode);" in HTML_TEMPLATE
 
 
+def test_project_graph_template_passes_site_url_and_handles_clusters() -> None:
+    assert "site_url: n.site_url" in HTML_TEMPLATE
+    assert "n.id === 'project:' + project" in HTML_TEMPLATE
+
+
 def test_ensure_projects_index_links_stubs(tmp_path: Path) -> None:
     projects = tmp_path / "wiki" / "projects"
     projects.mkdir(parents=True)
