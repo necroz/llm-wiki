@@ -910,6 +910,7 @@ function main() {
           });
         } catch (_) { /* empty group */ }
       });
+      try { network.fit({ animation: false }); } catch (_) { /* no network */ }
     } else {
       GRAPH.nodes.forEach(n => {
         const id = 'cluster:' + clusterKey(n);
