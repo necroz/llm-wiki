@@ -17,6 +17,10 @@ Versions below 1.0 are pre-production — API and file formats may change.
 
 - **README quick-start + `/wiki-all`** (#383) — document that `sync` alone only fills `raw/`; semantic wiki pages require `synthesize` or `all --with-synth`.
 
+### Fixed
+
+- **Graph node clicks** (#740) — `/graph.html` nodes now open their page again. The graph builder computed `site_url`, but the vis-network DataSet mapping dropped it, so the click handler always saw `undefined`.
+
 ## [1.3.82] — 2026-04-30
 
 #467 — healer-in-CI auto-patch comment workflow. Closes the Playwright Test Agents epic (#462).
