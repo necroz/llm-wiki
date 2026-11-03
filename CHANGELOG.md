@@ -16,6 +16,7 @@ Versions below 1.0 are pre-production — API and file formats may change.
 ### Changed
 
 - **README quick-start + `/wiki-all`** (#383) — document that `sync` alone only fills `raw/`; semantic wiki pages require `synthesize` or `all --with-synth`.
+- **Generated wiki pages and synth state are no longer tracked** — `wiki/index.md`, `wiki/overview.md`, and `.llmwiki-synth-state.json` were already listed in `.gitignore`; they are now removed from the index, so a fresh clone and CI never see local source links or machine state.
 
 ## [1.3.82] — 2026-04-30
 
