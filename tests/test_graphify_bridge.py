@@ -90,11 +90,17 @@ def test_cli_graph_engine_graphify_accepted():
 
 
 def test_pyproject_has_graph_extra():
+    import tomllib
+
     from llmwiki import REPO_ROOT
 
-    toml_path = REPO_ROOT / "pyproject.toml"
-    content = toml_path.read_text(encoding="utf-8")
-    assert 'graph = ["graphifyy' in content
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    extras = data["project"]["optional-dependencies"]
+    for name in ("graph", "all"):
+        joined = " ".join(extras[name])
+        assert "graphifyy" in joined, f"{name} extra lacks graphifyy"
+        assert "matplotlib" in joined, f"{name} extra lacks matplotlib"
+        assert "scipy" in joined, f"{name} extra lacks scipy"
 
 
 # ─── graphify-out in .gitignore ──────────────────────────────────────

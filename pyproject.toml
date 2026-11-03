@@ -57,7 +57,11 @@ dependencies = [
 highlight = []
 # Simplification sweep removed the PDF adapter; the [pdf] extra is
 # dropped here too. Don't reintroduce — the user pruned it deliberately.
-graph = ["graphifyy>=0.4.20"]
+graph = [
+    "graphifyy>=0.4.20",
+    "matplotlib>=3.8",
+    "scipy>=1.11",
+]
 dev = [
     "pytest>=8.4.2",
     "ruff>=0.15.11",
@@ -79,6 +83,8 @@ e2e = [
 ]
 all = [
     "graphifyy>=0.4.20",
+    "matplotlib>=3.8",
+    "scipy>=1.11",
 ]
 
 [project.urls]

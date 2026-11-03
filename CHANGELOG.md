@@ -100,6 +100,7 @@ Multi-agent code review remediation — 6 HIGH fixes from a 5-agent review of th
 - **`.nav-hamburger` has a forced-colors fallback** (#v1378-review) — Windows High Contrast Mode overrides our custom palette; without an explicit `@media (forced-colors: active)` rule the button visually disappeared against the nav background. Added system-named `ButtonText` border and `Highlight` focus outline.
 - **`ensure_projects_index` emits valid frontmatter** — the generated `wiki/projects/index.md` now uses `type: navigation` and `topics: [projects]` instead of `type: index` / `tags: [index, projects]`, which `frontmatter_validity` and `tags_topics_convention` reject; a plain `sync --auto-build` no longer turns a clean wiki into a lint error.
 - **`build_graphify_graph` forces overwrite of `graphify-out/graph.json`** — the bridge now passes `force=True` to `to_json`, so `llmwiki graph` replaces the saved graph after pages are deleted or coalesced instead of printing "Refusing to overwrite" and leaving stale output.
+- **`[graph]` / `[all]` extras now include `matplotlib` and `scipy`** — both are graph-pipeline runtime requirements that `graphifyy` does not declare; a fresh `pip install llmwiki[graph]` no longer leaves `llmwiki graph` crashing with `ImportError`/`ModuleNotFoundError` and falling back to the builtin engine.
 
 ### Added
 
