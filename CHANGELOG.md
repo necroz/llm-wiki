@@ -13,12 +13,19 @@ Versions below 1.0 are pre-production — API and file formats may change.
 - **`llmwiki all --with-synth`** (#383) — opt-in chain that runs `synthesize` before `build → graph → export → lint`, so CLI users can fill `wiki/sources/` from `raw/` in one command without relying on agent slash skills. Companion flags: `--synth-force` (pass `--force` to synthesize), `--vault` (vault-overlay synthesize when using `--with-synth`).
 - **`llmwiki sync --status` synthesis hint** (#383) — reports the configured `synthesis.backend` and points to `llmwiki synthesize` / `llmwiki all --with-synth` when `wiki/sources/` may stay empty after sync.
 - **OpenAI-compatible synthesis backend** — `synthesis.backend: "openai"` talks to any `/v1` chat-completions server (vLLM, SGLang, LM Studio, LiteLLM) with stdlib HTTP. New keys: `api_key`, `max_tokens`, `temperature`, `enable_thinking`. A non-loopback `base_url` logs a privacy warning, matching the Ollama backend.
+- **`synthesis.strip_unresolved_wikilinks` config key** (docs/tasks/08) — when set to `false`, `llmwiki synthesize` keeps `[[wikilinks]]` to not-yet-written pages instead of degrading them to plain text, so pages created later still receive their inbound links; default `true` preserves the old cleanup behavior.
+- **Low-signal session coalescing** — `synthesis.coalesce_low_signal`, `coalesce_min_group`, and `coalesce_window` replace groups of no-op sessions with one deterministic `*-noop-sessions.md` page and a `_clusters.json` manifest. Later runs reconcile stale cluster pages and re-queue their members.
+- **`synthesis.max_concurrency`** — run synthesis workers in parallel when the backend accepts concurrent requests.
+- **Machine-local config overrides** — `llmwiki synthesize` merges gitignored `config.json` and `config.local.json` over `examples/sessions_config.json`, so backend URLs and API keys stay out of the shared example.
 
 ### Changed
 
 - **README quick-start + `/wiki-all`** (#383) — document that `sync` alone only fills `raw/`; semantic wiki pages require `synthesize` or `all --with-synth`.
 - **Generated wiki pages and synth state are no longer tracked** — `wiki/index.md`, `wiki/overview.md`, and `.llmwiki-synth-state.json` were already listed in `.gitignore`; they are now removed from the index, so a fresh clone and CI never see local source links or machine state.
 - **`tests/test_synth_pipeline.py` synth-state isolation** — autouse fixture points `llmwiki.synth.pipeline.STATE_FILE` at `tmp_path`, so running the tests no longer overwrites the real `.llmwiki-synth-state.json` (which forced a full-corpus re-synthesis on the next run).
+- **README quick-start + `/wiki-all`** (#383) — document that `sync` alone only fills `raw/`; semantic wiki pages require `synthesize` or `all --with-synth`.
+- **`_sync_project_sessions` output hardening** — summary labels flatten nested wikilinks (no broken `[[stem|... [[X]] ...]]` links), understand an existing `## Sessions (N)` heading, cut long summaries at a word boundary, and skip the write when nothing changed.
+- **Generated `wiki/index.md`** — `## Sources` carries the page count and duplicate `## Sources` sections collapse into one, so reruns converge instead of appending.
 
 ## [1.3.82] — 2026-04-30
 
@@ -105,6 +112,10 @@ Multi-agent code review remediation — 6 HIGH fixes from a 5-agent review of th
 - **`llmwiki synthesize --estimate` labels the pricing backend** — when the configured `synthesis.backend` is not Claude (or its model is not in `MODEL_PRICING`), the estimate prints a note that the dollar figures use Claude API pricing and may not match the actual backend; a priced Claude model is now passed through to the report instead of always falling back to `DEFAULT_MODEL`.
 - **`query_graph` / `export_to_obsidian` read graphify's `links` key** — networkx renamed the `link` argument to `edges`; both call sites now pass `edges="links"` (with a `link=` fallback), so a graph written by graphify loads instead of raising.
 - **OpenAI-compatible backend retries only transient errors** — `_post_chat` no longer retries 400/401/403/404/422 (it raises immediately with the status and the first 200 characters of the body), and a 400 caused by `chat_template_kwargs` is retried once without that field, so strict OpenAI-compatible servers no longer pay three rejected attempts per page.
+- **`_sync_project_sessions` preserves manual notes** — the generated session list on project pages is now wrapped in `<!-- sessions:auto:start/end -->` markers and only the text between them is rewritten, so hand-edited lines in `## Sessions` survive `llmwiki synthesize`.
+- **`synthesize --force` with an unavailable backend no longer wipes synth state** — the early return used to save the empty `--force` state; it now leaves the on-disk state untouched.
+- **`_cluster_filename` handles sessions without a date** — a low-signal group with no `date` metadata no longer raises `IndexError`; it uses the stable `unknown-noop-sessions.md` name.
+- **Coalescing keeps hand-edited pages** — an individual source page modified after its `last_updated` date is preserved instead of being deleted.
 
 ### Added
 

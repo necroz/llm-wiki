@@ -208,6 +208,11 @@ cp examples/sessions_config.json config.json
 | `synthesis` | `timeout` | int (s) | 60 | Per-request timeout |
 | `synthesis` | `max_retries` | int | 3 | Exponential-backoff retry count on 429 / 5xx / timeout |
 | `synthesis` | `api_key` | string | `""` | Sent as `Authorization: Bearer` by the `openai` backend |
+| `synthesis` | `max_concurrency` | int | 1 | Parallel synthesis workers |
+| `synthesis` | `coalesce_low_signal` | bool | false | Merge no-op sessions into one cluster page |
+| `synthesis` | `coalesce_min_group` | int | 3 | Minimum group size for coalescing |
+| `synthesis` | `coalesce_window` | enum | `"all"` | Cluster window: `"all"` / `"month"` |
+| `synthesis` | `strip_unresolved_wikilinks` | bool | true | Degrade links to missing pages to plain text |
 | `meeting` | `enabled` | bool | false | Opt-in; non-AI adapter |
 | `meeting` | `source_dirs` | list | `["~/Meetings"]` | Directories to scan |
 | `meeting` | `extensions` | list | `[".vtt", ".srt"]` | File extensions to consider |

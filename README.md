@@ -306,7 +306,7 @@ setup.bat
 
 ```bash
 pip install -e .                # basic — everything you need
-pip install -e '.[graph]'       # + graphifyy AI-powered graph engine
+pip install -e '.[graph]'       # + graphifyy AI-powered graph engine (with matplotlib + scipy)
 pip install -e '.[dev]'         # + pytest + ruff
 pip install -e '.[e2e]'         # + Playwright + pytest-bdd + pytest-html (E2E)
 pip install -e '.[all]'         # graph + everything
@@ -491,7 +491,7 @@ Register in your MCP client's config — e.g. for Claude Desktop, add to `~/Libr
 
 ## Configuration
 
-Single JSON config at `examples/sessions_config.json`. Copy to `config.json` and edit:
+Single JSON config at `examples/sessions_config.json`. For machine-specific settings (backend URL, API key), put them in a gitignored `config.json` or `config.local.json` at the repo root — `llmwiki synthesize` merges them over the example (`config.local.json` wins). Full example:
 
 ```json
 {

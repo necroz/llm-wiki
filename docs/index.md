@@ -100,6 +100,7 @@ llmwiki runs two interchangeable ways. Pick one, start — you can switch later.
 - **[Style guide](style-guide.md)** — how to write docs that match this site's voice.
 - **[Adapter authoring](adapter-authoring.md)** — ship a new agent adapter.
 - **[Architecture](architecture.md)** — understand the three-layer model before changing code.
+- **[Task cards](tasks/README.md)** — bug-fix roadmap with one self-contained card per PR.
 - **[Roadmap](roadmap.md)** · **[Public roadmap](public-roadmap.md)**.
 
 ---

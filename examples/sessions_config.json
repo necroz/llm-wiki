@@ -88,12 +88,17 @@
     "auto_queue": true
   },
 
-  "_synthesis_comment": "LLM backend for auto-synthesizing wiki source pages. backend=dummy (default, offline) | ollama (local HTTP). Run `llmwiki synthesize --check` to probe the server.",
+  "_synthesis_comment": "LLM backend for auto-synthesizing wiki source pages. backend=dummy (default, offline) | ollama (local HTTP) | openai (any OpenAI-compatible /v1 server) | agent (defer to the running agent). Run `llmwiki synthesize --check` to probe the server. Put machine-specific values in config.local.json (gitignored) instead of this shared example. strip_unresolved_wikilinks=true (default) degrades [[links]] to missing pages into plain text; false keeps red links so pages created later still get linked.",
   "synthesis": {
     "backend": "dummy",
     "model": "llama3.1:8b",
     "base_url": "http://127.0.0.1:11434",
     "timeout": 60,
-    "max_retries": 3
+    "max_retries": 3,
+    "max_concurrency": 1,
+    "coalesce_low_signal": false,
+    "coalesce_min_group": 3,
+    "coalesce_window": "all",
+    "strip_unresolved_wikilinks": true
   }
 }

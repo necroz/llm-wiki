@@ -17,9 +17,11 @@ synthesized. Re-running on an unchanged tree is a sub-second no-op.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -262,7 +264,7 @@ def _auto_archive_log(log_path: Path) -> Optional[Path]:
     return archive
 
 
-_SOURCES_HEADING = re.compile(r"^##\s+Sources\s*$", re.MULTILINE)
+_SOURCES_HEADING = re.compile(r"^##\s+Sources(?:\s*\(\d+\))?\s*$", re.MULTILINE)
 _NEXT_H2 = re.compile(r"^##\s+", re.MULTILINE)
 
 
@@ -301,7 +303,7 @@ def _rebuild_index(wiki_dir: Path) -> Optional[Path]:
         suffix = f" — {' · '.join(suffix_parts)}" if suffix_parts else ""
         bullets.append(f"- [{title}]({rel}){suffix}")
 
-    sources_block = "## Sources\n" + (
+    sources_block = f"## Sources ({len(bullets)})\n" + (
         "\n".join(bullets) if bullets else "*(none yet)*"
     ) + "\n"
 
@@ -315,6 +317,20 @@ def _rebuild_index(wiki_dir: Path) -> Optional[Path]:
             "`## Sources` are preserved.\n\n"
             "## Sources\n*(placeholder)*\n"
         )
+
+    # Older runs appended a second Sources block when the heading carried a
+    # count and the regex missed it. Collapse duplicates before replacing.
+    matches = list(_SOURCES_HEADING.finditer(original))
+    if len(matches) > 1:
+        kept: list[str] = []
+        cursor = 0
+        for dup in matches[1:]:
+            kept.append(original[cursor:dup.start()])
+            tail = original[dup.end():]
+            next_match = _NEXT_H2.search(tail)
+            cursor = dup.end() + next_match.start() if next_match else len(original)
+        kept.append(original[cursor:])
+        original = "".join(kept)
 
     match = _SOURCES_HEADING.search(original)
     if not match:
@@ -355,6 +371,523 @@ def _discover_raw_sessions(
         meta, body = parse_frontmatter(text)
         out.append((p, meta, body))
     return out
+
+
+# ─── low-signal coalescing ────────────────────────────────────────────
+#
+# Hourly autonomous workers leave behind two kinds of zero-value
+# sessions: provider-limit failures (the prompt is stored, the agent
+# never answers) and lock-contention skips (the worker exits because
+# another run holds RUN.lock). Synthesizing one page per such launch
+# floods the wiki with near-identical summaries. These helpers detect
+# them and replace all member pages with one deterministic cluster page.
+
+_TURN_MARKER = re.compile(r"^### Turn \d+ — (User|Assistant)\s*$", re.MULTILINE)
+_WIKILINK_RE = re.compile(r"\[\[([^\]|]+)(?:\|([^\]]*))?\]\]")
+
+
+def _strip_unresolved_wikilinks(wiki_dir: Path, sources_dir: Path) -> int:
+    """Replace wikilinks whose target page does not exist with plain text.
+
+    LLM-generated pages often reference entities that were never
+    written. Leaving them makes ``link_integrity`` noisy, so the
+    pipeline degrades them to plain text after synthesis. The alias is
+    kept when present.
+    """
+    slugs = {p.stem for p in wiki_dir.rglob("*.md")}
+    removed = 0
+    for page in sorted(sources_dir.rglob("*.md")):
+        if page.name.startswith("_"):
+            continue
+        try:
+            text = page.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        match = re.match(r"^(---\n.*?\n---\n)(.*)$", text, re.S)
+        head, body = (match.group(1), match.group(2)) if match else ("", text)
+
+        def repl(link: re.Match[str]) -> str:
+            nonlocal removed
+            target = link.group(1).strip()
+            alias = link.group(2)
+            base = target.split("#", 1)[0].strip()
+            if base in slugs:
+                return link.group(0)
+            removed += 1
+            return alias.strip() if alias else target
+
+        new_body = _WIKILINK_RE.sub(repl, body)
+        if new_body != body:
+            page.write_text(head + new_body, encoding="utf-8")
+    return removed
+
+
+def _split_turns(body: str) -> tuple[list[str], list[str]]:
+    """Return (user_texts, assistant_texts) from a converted transcript."""
+    parts = _TURN_MARKER.split(body)
+    users: list[str] = []
+    assistants: list[str] = []
+    for i in range(1, len(parts) - 1, 2):
+        target = users if parts[i] == "User" else assistants
+        target.append(parts[i + 1])
+    return users, assistants
+
+
+def _output_tokens(meta: dict[str, Any]) -> int:
+    """Read output-token count from either a dict or an inline-JSON string."""
+    totals = meta.get("token_totals")
+    if isinstance(totals, dict):
+        return int(totals.get("output", 0) or 0)
+    try:
+        return int(json.loads(str(totals)).get("output", 0) or 0)
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return 0
+
+
+def low_signal_reason(meta: dict[str, Any], body: str) -> str | None:
+    """Classify a session that produced no work, or return None.
+
+    Only two shapes qualify:
+
+    * ``no-response`` — zero tool calls, zero output tokens, and no
+      non-empty assistant turn. A provider quota/limit failure leaves
+      exactly this shape.
+    * ``lock-skip`` — the worker exited immediately because another run
+      held ``RUN.lock`` (at most three tool calls).
+
+    Anything with a commit, a non-empty answer, or more than three tool
+    calls is deliberately excluded.
+    """
+    users, assistants = _split_turns(body)
+    if not users:
+        return None
+    tools = int(meta.get("tool_calls") or 0)
+    last = next((a.strip() for a in reversed(assistants) if a.strip()), "")
+    if tools == 0 and not last and _output_tokens(meta) == 0:
+        return "no-response"
+    low = last.lower()
+    if (
+        tools <= 3
+        and "run.lock существует" in low
+        and ("завершаюсь сразу" in low or "запуск пропущен" in low)
+    ):
+        return "lock-skip"
+    return None
+
+
+def _prompt_fingerprint(body: str) -> str:
+    users, _ = _split_turns(body)
+    if not users:
+        return ""
+    normalised = " ".join(users[0].split())
+    return hashlib.md5(normalised.encode("utf-8")).hexdigest()[:8]
+
+
+def _session_page_path(sources_out: Path, meta: dict[str, Any]) -> Path:
+    """Mirror the per-session output path used by the main loop."""
+    project = str(meta.get("project") or "unknown")
+    slug = _normalise_slug(str(meta.get("slug") or "unknown"))
+    date = str(meta.get("date") or "").strip()
+    filename = f"{date}-{slug}" if date else slug
+    return sources_out / project / f"{filename}.md"
+
+
+def _cluster_filename(rows: list[dict[str, Any]], window: str) -> str:
+    dates = sorted(str(r["date"]) for r in rows if r.get("date"))
+    if window == "month" and dates:
+        return f"{dates[-1][:7]}-noop-sessions.md"
+    years = sorted({d[:4] for d in dates})
+    if not years:
+        # Sessions without a date still coalesce; use a stable prefix so
+        # repeated runs keep the same page name.
+        return "unknown-noop-sessions.md"
+    prefix = years[0] if len(years) == 1 else f"{years[0]}-{years[-1]}"
+    return f"{prefix}-noop-sessions.md"
+
+
+def _quote_from(text: str, needle: str = "", limit: int = 220) -> str:
+    """Return one representative line, optionally containing ``needle``."""
+    for line in text.splitlines():
+        clean = " ".join(line.split())
+        if not clean:
+            continue
+        if not needle or needle.lower() in clean.lower():
+            return clean[:limit]
+    return ""
+
+
+def _render_cluster_page(
+    project: str, rows: list[dict[str, Any]], *, page_name: str
+) -> str:
+    """Render one deterministic page for a group of low-signal sessions."""
+    rows = sorted(rows, key=lambda r: (str(r.get("date") or ""), r["slug"]))
+    dates = [str(r["date"]) for r in rows if r.get("date")]
+    date_range = f"{dates[0]}..{dates[-1]}" if dates else "unknown"
+    reasons = sorted({str(r["reason"]) for r in rows})
+    reason_counts = {
+        reason: sum(1 for r in rows if r["reason"] == reason) for reason in reasons
+    }
+    prompts = {str(r["prompt"]) for r in rows if r.get("prompt")}
+    reasons_joined = ", ".join(reasons)
+    noun = "session" if len(rows) == 1 else "sessions"
+    today = datetime.now(timezone.utc).date().isoformat()
+
+    tags: list[str] = ["zcode", "session-transcript", project, "noop"]
+    for reason in reasons:
+        if reason not in tags:
+            tags.append(reason)
+
+    if reason_counts.get("no-response") and reason_counts.get("lock-skip"):
+        why = (
+            f"{reason_counts['no-response']} had no assistant response "
+            f"(zero tool calls, zero output tokens), and "
+            f"{reason_counts['lock-skip']} exited immediately because "
+            f"`RUN.lock` was held by another run."
+        )
+    elif reason_counts.get("no-response"):
+        why = "all had no assistant response (zero tool calls, zero output tokens)."
+    else:
+        why = "all exited immediately because `RUN.lock` was held by another run."
+
+    lines = [
+        "---",
+        f'title: "{project} — no-op sessions ({date_range})"',
+        "type: source",
+        f"tags: [{', '.join(tags)}]",
+        f"date: {dates[-1] if dates else today}",
+        f"project: {project}",
+        f'date_range: "{date_range}"',
+        f"merged_sessions: {len(rows)}",
+        f'merge_reasons: "{reasons_joined}"',
+        f"last_updated: {dates[-1] if dates else today}",
+        "---",
+        "<!-- Auto-generated cluster page. Raw transcripts stay in raw/sessions/. -->",
+        "",
+        "## Summary",
+        "",
+        f"This page coalesces {len(rows)} {noun} that produced no work. "
+        f"They span {date_range} and {why} No commits, `PROGRESS.md` "
+        "updates, or journal entries were produced by these runs.",
+        "",
+        "## Key Claims",
+        "",
+        f"- {len(rows)} low-signal {noun} across {len(prompts)} distinct prompt fingerprint(s).",
+        "- Every member session has either no assistant turn and zero output tokens, "
+        "or an immediate lock-skip exit.",
+        "- No repository changes were recorded; these runs did not advance the mission.",
+        "- Raw transcripts remain under `raw/sessions/`; each table row keeps its session ID.",
+        "",
+        "## Sessions",
+        "",
+        "| Date | Session | Reason | Prompt | Tools | Output tokens |",
+        "|---|---|---|---|---:|---:|",
+    ]
+    for row in rows:
+        lines.append(
+            f"| {row.get('date') or ''} | `{row['slug']}` | {row['reason']} | "
+            f"`{row.get('prompt') or ''}` | {row.get('tools', 0)} | {row.get('output', 0)} |"
+        )
+    lines += ["", "## Key Quotes", ""]
+    first_prompt = _quote_from(_split_turns(rows[0]["body"])[0][0]) if rows[0]["body"] else ""
+    if first_prompt:
+        lines.append(f'> "{first_prompt}" — representative worker prompt.')
+    lock_quote = ""
+    for row in rows:
+        if row["reason"] != "lock-skip":
+            continue
+        assistants = _split_turns(row["body"])[1]
+        last = next((a for a in reversed(assistants) if a.strip()), "")
+        lock_quote = _quote_from(last, needle="RUN.lock существует")
+        if lock_quote:
+            break
+    if lock_quote:
+        lines.append(f'> "{lock_quote}" — why a lock-skip run exited.')
+    lines += [
+        "",
+        "## Connections",
+        "",
+        f"- [[{project}]] — parent project.",
+        "",
+        "## Contradictions",
+        "",
+        "- None recorded.",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def _cluster_manifest_path(sources_out: Path, project: str) -> Path:
+    return sources_out / project / "_clusters.json"
+
+
+def _load_cluster_manifest(path: Path) -> dict[str, Any]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+_SESSIONS_START = "<!-- sessions:auto:start -->"
+_SESSIONS_END = "<!-- sessions:auto:end -->"
+
+# Wikilinks that may appear inside a source-page summary. They cannot
+# stay nested inside the ``[[stem|label]]`` link we generate below.
+_WIKILINK_IN_TEXT_RE = re.compile(r"!?\[\[([^\]|]*)(?:\|([^\]]*))?\]\]")
+
+
+def _plain_wikilink_text(text: str) -> str:
+    """Flatten wikilinks to their display text and drop link delimiters."""
+
+    def replace(match: re.Match[str]) -> str:
+        target, alias = match.group(1), match.group(2)
+        return (alias or target).strip()
+
+    text = _WIKILINK_IN_TEXT_RE.sub(replace, text)
+    for token in ("|", "[[", "]]"):
+        text = text.replace(token, " ")
+    return " ".join(text.split())
+
+
+def _short_summary(text: str, limit: int = 140) -> str:
+    """Return a one-sentence summary cut at a word boundary."""
+
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    if " " in cut:
+        cut = cut.rsplit(" ", 1)[0]
+    return cut
+
+
+def _source_page_looks_edited(page: Path) -> bool:
+    """Best-effort check that a source page changed after synthesis.
+
+    Synthesis stamps ``last_updated`` with the current date. A file
+    modified on a later day therefore carries edits we should not
+    delete silently. A page without a parseable ``last_updated`` is
+    also treated as edited.
+    """
+    try:
+        text = page.read_text(encoding="utf-8")
+        mtime = page.stat().st_mtime
+    except OSError:
+        return True
+    meta, _body = parse_frontmatter(text)
+    updated = str(meta.get("last_updated") or "").strip()
+    try:
+        updated_date = datetime.fromisoformat(updated).date()
+    except ValueError:
+        return True
+    written_date = datetime.fromtimestamp(mtime, tz=timezone.utc).date()
+    return written_date > updated_date
+
+
+def _sync_project_sessions(wiki_dir: Path, project: str) -> None:
+    """Rewrite the generated block in ``## Sessions`` from the source pages on disk.
+
+    Only the text between the ``sessions:auto`` markers is regenerated; any
+    manual notes outside the markers are left untouched.
+    """
+    page = wiki_dir / "projects" / f"{project}.md"
+    sources = wiki_dir / "sources" / project
+    if not page.exists() or not sources.is_dir():
+        return
+    rows: list[tuple[str, str, str]] = []
+    for p in sorted(sources.glob("*.md")):
+        if p.name.startswith("_"):
+            continue
+        try:
+            meta, body = parse_frontmatter(p.read_text(encoding="utf-8"))
+        except OSError:
+            continue
+        date = str(meta.get("date") or "")
+        summary = ""
+        match = re.search(r"## Summary\s*\n(.*?)(?:\n## |\Z)", body, re.S)
+        if match:
+            first = " ".join(match.group(1).split())
+            first = re.split(r"(?<=[.!?])\s", first, maxsplit=1)[0]
+            summary = _plain_wikilink_text(_short_summary(first).rstrip(" .;:"))
+        rows.append((date, p.stem, summary))
+    rows.sort(key=lambda r: (r[0], r[1]), reverse=True)
+    bullet_lines = []
+    for date, stem, summary in rows:
+        label = f"{date} — {summary}" if summary else date
+        bullet_lines.append(f"- [[{stem}|{label}]]")
+    auto_block = (
+        f"{_SESSIONS_START}\n"
+        + "\n".join(bullet_lines)
+        + f"\n{_SESSIONS_END}"
+    )
+    original = page.read_text(encoding="utf-8")
+    text = original
+    if _SESSIONS_START in text and _SESSIONS_END in text:
+        pattern = re.compile(
+            re.escape(_SESSIONS_START) + r".*?" + re.escape(_SESSIONS_END),
+            re.S,
+        )
+        text = pattern.sub(lambda _: auto_block, text, count=1)
+    else:
+        heading = re.search(r"^## Sessions(?:[ \t]*\(\d+\))?[ \t]*$", text, flags=re.M)
+        if heading:
+            after = text[heading.end():].lstrip("\n")
+            text = text[: heading.end()] + "\n\n" + auto_block + "\n\n" + after
+        else:
+            section = f"## Sessions\n\n{auto_block}"
+            if "## Connections" in text:
+                text = text.replace(
+                    "## Connections", section + "\n\n## Connections", 1
+                )
+            else:
+                text = text.rstrip() + "\n\n" + section + "\n"
+    if text != original:
+        page.write_text(text, encoding="utf-8")
+
+
+def _coalesce_low_signal_sessions(
+    sessions: list[tuple[Path, dict[str, Any], str]],
+    *,
+    sources_out: Path,
+    state: dict[str, float],
+    raw_dir: Path,
+    min_group: int,
+    window: str,
+) -> tuple[int, set[str], set[str]]:
+    """Replace low-signal per-session pages with one cluster page each.
+
+    Returns ``(clusters_written, coalesced_rel_paths, affected_projects)``.
+    Sessions below ``min_group`` keep their individual page so a single
+    failure is not hidden.
+    """
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for p, meta, body in sessions:
+        reason = low_signal_reason(meta, body)
+        if not reason:
+            continue
+        project = str(meta.get("project") or p.parent.name)
+        date = str(meta.get("date") or "")
+        bucket = date[:7] if window == "month" else "all"
+        key = f"{project}\x00{bucket}"
+        try:
+            rel = str(p.relative_to(raw_dir))
+        except ValueError:
+            continue
+        groups.setdefault(key, []).append({
+            "path": p,
+            "body": body,
+            "rel": rel,
+            "reason": reason,
+            "project": project,
+            "date": date,
+            "slug": str(meta.get("slug") or p.stem),
+            "meta": meta,
+            "tools": int(meta.get("tool_calls") or 0),
+            "output": _output_tokens(meta),
+            "prompt": _prompt_fingerprint(body),
+        })
+
+    clusters = 0
+    coalesced: set[str] = set()
+    affected: set[str] = set()
+    produced: dict[str, set[str]] = {}
+    for rows in groups.values():
+        if len(rows) < min_group:
+            continue
+        project = rows[0]["project"]
+        page_name = _cluster_filename(rows, window)
+        produced.setdefault(project, set()).add(page_name)
+        page_path = sources_out / project / page_name
+        page_path.parent.mkdir(parents=True, exist_ok=True)
+        content = _render_cluster_page(project, rows, page_name=page_name)
+        changed = False
+        if not page_path.exists() or page_path.read_text(encoding="utf-8") != content:
+            page_path.write_text(content, encoding="utf-8")
+            changed = True
+
+        for row in rows:
+            individual = _session_page_path(sources_out, row["meta"])
+            # Delete only pages that still look machine-generated. A page
+            # edited after synthesis keeps its content and stays visible.
+            if individual.exists() and not _source_page_looks_edited(individual):
+                individual.unlink()
+                changed = True
+            try:
+                state[row["rel"]] = row["path"].stat().st_mtime
+            except OSError:
+                pass
+            coalesced.add(row["rel"])
+
+        manifest_path = _cluster_manifest_path(sources_out, project)
+        manifest = _load_cluster_manifest(manifest_path)
+        dates = sorted(str(r["date"]) for r in rows if r["date"])
+        entry = {
+            "sessions": sorted(str(r["slug"]) for r in rows),
+            "reasons": sorted({str(r["reason"]) for r in rows}),
+            "date_range": f"{dates[0]}..{dates[-1]}" if dates else "",
+        }
+        previous = manifest.get(page_name) or {}
+        if any(previous.get(key) != value for key, value in entry.items()) or not previous:
+            manifest[page_name] = {
+                **entry,
+                "updated": datetime.now(timezone.utc).date().isoformat(),
+            }
+            manifest_path.write_text(
+                json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            changed = True
+
+        if changed:
+            clusters += 1
+            affected.add(project)
+
+    # Reconcile cluster pages that are no longer valid: a group can
+    # shrink below ``min_group`` or change its window, and the old
+    # cluster page would otherwise keep claiming those sessions were
+    # no-ops. Dropping the members from ``state`` lets the normal
+    # synthesis pass recreate their individual pages.
+    rel_by_slug: dict[tuple[str, str], str] = {}
+    for p, meta, _body in sessions:
+        project = str(meta.get("project") or p.parent.name)
+        slug = str(meta.get("slug") or p.stem)
+        try:
+            rel_by_slug[(project, slug)] = str(p.relative_to(raw_dir))
+        except ValueError:
+            continue
+
+    for manifest_path in sorted(sources_out.glob("*/_clusters.json")):
+        project = manifest_path.parent.name
+        manifest = _load_cluster_manifest(manifest_path)
+        stale = sorted(set(manifest) - produced.get(project, set()))
+        if not stale:
+            continue
+        for page_name in stale:
+            if "/" in page_name or "\\" in page_name:
+                continue
+            entry = manifest.pop(page_name, {}) or {}
+            page_path = sources_out / project / page_name
+            try:
+                generated = "Auto-generated cluster page" in page_path.read_text(
+                    encoding="utf-8"
+                )
+            except OSError:
+                generated = False
+            if generated:
+                page_path.unlink()
+            for slug in entry.get("sessions", []) or []:
+                rel = rel_by_slug.get((project, str(slug)))
+                if rel is not None:
+                    state.pop(rel, None)
+        if manifest:
+            manifest_path.write_text(
+                json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+        else:
+            manifest_path.unlink()
+        affected.add(project)
+
+    return clusters, coalesced, affected
 
 
 # ─── #351: AI-suggested tags ──────────────────────────────────────────
@@ -609,6 +1142,11 @@ def synthesize_new_sessions(
     force: bool = False,
     log_path: Optional[Path] = None,
     state_file: Optional[Path] = None,
+    max_workers: int = 1,
+    coalesce_low_signal: bool = False,
+    coalesce_min_group: int = 3,
+    coalesce_window: str = "all",
+    strip_unresolved_wikilinks: bool = True,
 ) -> dict[str, Any]:
     """Main entry point. Returns a summary dict:
 
@@ -616,32 +1154,21 @@ def synthesize_new_sessions(
         "total_scanned": int,
         "new_files": int,
         "synthesized": int,
+        "coalesced": int,
         "skipped": int,
         "errors": list[str],
         "backend": str,
     }
     """
-    if backend is None:
-        backend = DummySynthesizer()
-
-    if not backend.is_available():
-        return {
-            "total_scanned": 0,
-            "new_files": 0,
-            "synthesized": 0,
-            "skipped": 0,
-            "errors": [f"Backend {backend.name} is not available"],
-            "backend": backend.name,
-        }
-
     sources_out = wiki_sources_dir or WIKI_SOURCES
     prompt_template = _load_prompt_template()
     state = {} if force else _load_state(state_file)
     sessions = _discover_raw_sessions(raw_dir)
+    raw_root = raw_dir or RAW_SESSIONS
 
     new_files: list[tuple[Path, dict[str, Any], str]] = []
     for p, meta, body in sessions:
-        rel = str(p.relative_to(raw_dir or RAW_SESSIONS))
+        rel = str(p.relative_to(raw_root))
         try:
             mtime = p.stat().st_mtime
         except OSError:
@@ -654,10 +1181,50 @@ def synthesize_new_sessions(
         "total_scanned": len(sessions),
         "new_files": len(new_files),
         "synthesized": 0,
+        "coalesced": 0,
         "skipped": 0,
         "errors": [],
-        "backend": backend.name,
+        "backend": backend.name if backend is not None else "none",
     }
+
+    # Coalescing is deterministic and does not need a backend, so it runs
+    # before the availability probe. This keeps cleanup possible while
+    # the LLM server is down.
+    if coalesce_low_signal and not dry_run:
+        clusters, coalesced_rels, affected = _coalesce_low_signal_sessions(
+            sessions,
+            sources_out=sources_out,
+            state=state,
+            raw_dir=raw_root,
+            min_group=max(1, int(coalesce_min_group)),
+            window=coalesce_window,
+        )
+        summary["coalesced"] = clusters
+        summary["coalesced_projects"] = sorted(affected)
+        if coalesced_rels:
+            new_files = [
+                item
+                for item in new_files
+                if str(item[0].relative_to(raw_root)) not in coalesced_rels
+            ]
+            summary["new_files"] = len(new_files)
+            for project in affected:
+                _sync_project_sessions(sources_out.parent, project)
+        if clusters:
+            print(f"  coalesced: {clusters} cluster page(s)")
+
+    if backend is None:
+        backend = DummySynthesizer()
+        summary["backend"] = backend.name
+
+    if new_files and not backend.is_available():
+        summary["errors"].append(f"Backend {backend.name} is not available")
+        # A --force run starts from an empty state. Saving it here would
+        # wipe the record of every already-synthesized page, so leave the
+        # on-disk state untouched when the backend cannot be reached.
+        if not force:
+            _save_state(state, state_file)
+        return summary
 
     if dry_run:
         summary["skipped"] = len(new_files)
@@ -669,41 +1236,22 @@ def synthesize_new_sessions(
             print(f"  {meta.get('slug', p.stem)}")
         return summary
 
-    for p, meta, body in new_files:
+    if max_workers < 1:
+        max_workers = 1
+    lock = threading.Lock()
+
+    def _process_one(
+        item: tuple[Path, dict[str, Any], str],
+    ) -> tuple[str, str, Optional[float], str, str, Optional[str]]:
+        p, meta, body = item
         raw_slug = meta.get("slug", p.stem)
         project = meta.get("project", p.parent.name)
         rel = str(p.relative_to(raw_dir or RAW_SESSIONS))
-
-        # G-21 (#307): normalise slug — spaces → hyphens, strip filesystem-
-        # unsafe chars so the output filename is URL-safe + shell-safe.
         slug = _normalise_slug(raw_slug)
-
-        # G-06 (#292): prepend the session date to prevent silent slug
-        # collisions. Claude Code's 3-word auto-slugs collide often (12×
-        # `flickering-orbiting-fern` in one corpus). Output path now
-        # `wiki/sources/<project>/<YYYY-MM-DD>-<slug>.md`. Falls back to
-        # just the slug when no date is present (preserves old tests).
         date = str(meta.get("date", "")).strip()
         filename = f"{date}-{slug}" if date else slug
-
         try:
-            # #py-h7 (#585): pass the raw template — backends own rendering.
-            # The pre-render here used to interpolate {body} and {meta}
-            # before handing the result to backends, but that fought with
-            # the BaseSynthesizer contract ("prompt_template is the
-            # contents of prompts/source_page.md with {body} and {meta}
-            # placeholders"). Worse, the pipeline pre-render formatted
-            # meta as `key: value\n` lines while OllamaSynthesizer's own
-            # _render_prompt formats meta as JSON — so Ollama users
-            # silently got the pipeline's textual format instead of the
-            # JSON its prompts were tuned for. Now: pipeline hands over
-            # the unrendered template; each backend renders it with the
-            # format it was designed against.
             synthesized = backend.synthesize_source_page(body, meta, prompt_template)
-
-            # Build the full wiki source page.
-            # #351: pass the existing path so maintainer-curated tags
-            # are preserved on re-synthesize.
             out_dir = sources_out / project
             out_dir.mkdir(parents=True, exist_ok=True)
             out_path = out_dir / f"{filename}.md"
@@ -711,36 +1259,89 @@ def synthesize_new_sessions(
                 meta, synthesized, existing_page_path=out_path
             )
             out_path.write_text(page_content, encoding="utf-8")
-
-            # Update state
-            state[rel] = p.stat().st_mtime
-            summary["synthesized"] += 1
-
-            # G-08 (#294): log uses a clean separator so slugs with
-            # spaces don't break awk/sed parsing. See also G-20/#306
-            # for the batched summary emitted after the loop.
-            print(f"  synthesized: {project} → {filename}")
-
+            return ("ok", rel, p.stat().st_mtime, project, filename, None)
         except Exception as e:
-            summary["errors"].append(f"{slug}: {e}")
-            summary["skipped"] += 1
-            print(f"  error: {slug}: {e}")
+            return ("error", rel, None, project, filename, f"{slug}: {e}")
+
+    def _record(
+        result: tuple[str, str, Optional[float], str, str, Optional[str]],
+    ) -> None:
+        status, rel, mtime, project, filename, error = result
+        with lock:
+            if status == "ok" and mtime is not None:
+                state[rel] = mtime
+                summary["synthesized"] += 1
+                print(f"  synthesized: {project} → {filename}")
+                # Checkpoint so an interrupted long run keeps the
+                # pages it already produced.
+                if summary["synthesized"] % 10 == 0:
+                    _save_state(state, state_file)
+            else:
+                summary["errors"].append(error or "unknown error")
+                summary["skipped"] += 1
+                print(f"  error: {error}")
+
+    if max_workers > 1:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = [pool.submit(_process_one, item) for item in new_files]
+            for future in as_completed(futures):
+                _record(future.result())
+    else:
+        for item in new_files:
+            _record(_process_one(item))
+
+    if summary["synthesized"] > 0:
+        # LLM pages often link to concepts that were never written.
+        # Degrade unresolved links to plain text so link_integrity
+        # stays clean, then refresh the project session indexes.
+        # strip_unresolved_wikilinks=False keeps the red links so pages
+        # created later still receive them.
+        if strip_unresolved_wikilinks:
+            try:
+                summary["stripped_links"] = _strip_unresolved_wikilinks(
+                    sources_out.parent, sources_out
+                )
+            except OSError as e:
+                summary["errors"].append(f"link cleanup: {e}")
+        touched = {
+            str(meta.get("project") or p.parent.name)
+            for p, meta, _ in new_files
+        }
+        for project in sorted(touched):
+            _sync_project_sessions(sources_out.parent, project)
 
     # G-20 (#306): emit ONE summary log entry per invocation, not one
     # per page. Includes project counts + error count. The old per-page
     # entries flooded wiki/log.md (60+ lines per run).
-    if summary["synthesized"] > 0 or summary["errors"]:
+    if (
+        summary["synthesized"] > 0
+        or summary.get("coalesced", 0) > 0
+        or summary["errors"]
+    ):
         projects_touched: dict[str, int] = {}
         for p, meta, _ in new_files:
             project = meta.get("project", p.parent.name)
             projects_touched[project] = projects_touched.get(project, 0) + 1
+        parts: list[str] = []
+        if summary["synthesized"]:
+            parts.append(
+                f"{summary['synthesized']} sessions across "
+                f"{len(projects_touched)} projects"
+            )
+        if summary.get("coalesced"):
+            parts.append(f"{summary['coalesced']} cluster page(s)")
         _append_log(
-            f"{summary['synthesized']} sessions across {len(projects_touched)} projects",
+            " and ".join(parts) if parts else "0 sessions",
             log_path=log_path,
             operation="synthesize",
             details={
                 "processed": summary["synthesized"],
-                "created": sorted(projects_touched.keys()),
+                "coalesced": summary.get("coalesced", 0),
+                "created": sorted(
+                    set(projects_touched) | set(summary.get("coalesced_projects", []))
+                ),
                 "errors": summary["errors"],
             },
         )
@@ -754,7 +1355,7 @@ def synthesize_new_sessions(
     # check. The index rebuild walks the entire wiki + parses every
     # frontmatter; on a 5k-page corpus that's seconds. Skip when zero
     # pages were synthesized in this pass.
-    if summary.get("synthesized", 0) > 0:
+    if summary.get("synthesized", 0) > 0 or summary.get("coalesced", 0) > 0:
         try:
             _rebuild_index(sources_out.parent)
         except (OSError, ValueError, RuntimeError) as e:

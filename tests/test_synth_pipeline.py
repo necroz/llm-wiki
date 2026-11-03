@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -14,7 +15,6 @@ from llmwiki.synth.pipeline import (
     _load_prompt_template,
     synthesize_new_sessions,
 )
-
 
 
 @pytest.fixture(autouse=True)
@@ -30,6 +30,118 @@ def test_synth_state_is_isolated(tmp_path):
     from llmwiki.synth import pipeline
 
     assert pipeline.STATE_FILE.parent == tmp_path
+
+
+def test_sync_project_sessions_preserves_manual_notes(tmp_path):
+    from llmwiki.synth.pipeline import _sync_project_sessions
+
+    wiki = tmp_path / "wiki"
+    sources = wiki / "sources" / "proj"
+    projects = wiki / "projects"
+    sources.mkdir(parents=True)
+    projects.mkdir(parents=True)
+    (sources / "2026-01-01-s1.md").write_text(
+        '---\ntitle: "s1"\ntype: source\ndate: 2026-01-01\n'
+        'project: proj\n---\n\n## Summary\n\nOne session.\n',
+        encoding="utf-8",
+    )
+    page = projects / "proj.md"
+    page.write_text(
+        '---\ntitle: "proj"\n---\n\n# proj\n\n## Sessions\n\n'
+        "- manual note: do not lose this\n\n"
+        "## Connections\n\n- [[llm-wiki]]\n",
+        encoding="utf-8",
+    )
+
+    _sync_project_sessions(wiki, "proj")
+    first = page.read_text(encoding="utf-8")
+    assert "manual note: do not lose this" in first
+    assert "sessions:auto:start" in first
+    assert "sessions:auto:end" in first
+
+    _sync_project_sessions(wiki, "proj")
+    assert page.read_text(encoding="utf-8") == first
+
+
+def test_sync_project_sessions_flattens_wikilinks_in_summary(tmp_path):
+    from llmwiki.synth.pipeline import _sync_project_sessions
+
+    wiki = tmp_path / "wiki"
+    sources = wiki / "sources" / "proj"
+    projects = wiki / "projects"
+    sources.mkdir(parents=True)
+    projects.mkdir(parents=True)
+    (sources / "2026-01-01-s1.md").write_text(
+        '---\ntitle: "s1"\ntype: source\ndate: 2026-01-01\n'
+        'project: proj\n---\n\n## Summary\n\nRelated to [[SampleTopic|Sample Topic]].\n',
+        encoding="utf-8",
+    )
+    page = projects / "proj.md"
+    page.write_text(
+        '---\ntitle: "proj"\n---\n\n# proj\n\n## Sessions\n\n'
+        "- manual note\n\n## Connections\n",
+        encoding="utf-8",
+    )
+
+    _sync_project_sessions(wiki, "proj")
+    text = page.read_text(encoding="utf-8")
+    line = next(
+        line for line in text.splitlines()
+        if line.startswith("- [[2026-01-01-s1|")
+    )
+    assert line == "- [[2026-01-01-s1|2026-01-01 — Related to Sample Topic]]"
+    assert line.count("[[") == 1
+
+
+def test_sync_project_sessions_keeps_counted_heading(tmp_path):
+    from llmwiki.synth.pipeline import _sync_project_sessions
+
+    wiki = tmp_path / "wiki"
+    sources = wiki / "sources" / "proj"
+    projects = wiki / "projects"
+    sources.mkdir(parents=True)
+    projects.mkdir(parents=True)
+    (sources / "2026-01-01-s1.md").write_text(
+        '---\ntitle: "s1"\ntype: source\ndate: 2026-01-01\n'
+        'project: proj\n---\n\n## Summary\n\nOne session.\n',
+        encoding="utf-8",
+    )
+    page = projects / "proj.md"
+    page.write_text(
+        '---\ntitle: "proj"\n---\n\n## Sessions (3)\n\n- old list\n\n'
+        "## Connections\n",
+        encoding="utf-8",
+    )
+
+    _sync_project_sessions(wiki, "proj")
+    text = page.read_text(encoding="utf-8")
+    assert text.count("## Sessions") == 1
+    assert "sessions:auto:start" in text
+
+
+def test_sync_project_sessions_skips_unchanged_file(tmp_path):
+    from llmwiki.synth.pipeline import _sync_project_sessions
+
+    wiki = tmp_path / "wiki"
+    sources = wiki / "sources" / "proj"
+    projects = wiki / "projects"
+    sources.mkdir(parents=True)
+    projects.mkdir(parents=True)
+    (sources / "2026-01-01-s1.md").write_text(
+        '---\ntitle: "s1"\ntype: source\ndate: 2026-01-01\n'
+        'project: proj\n---\n\n## Summary\n\nOne session.\n',
+        encoding="utf-8",
+    )
+    page = projects / "proj.md"
+    page.write_text(
+        '---\ntitle: "proj"\n---\n\n## Sessions\n',
+        encoding="utf-8",
+    )
+
+    _sync_project_sessions(wiki, "proj")
+    os.utime(page, (1_000_000, 1_000_000))
+    _sync_project_sessions(wiki, "proj")
+    assert page.stat().st_mtime == 1_000_000
 
 
 # ─── fixtures ────────────────────────────────────────────────────────────
@@ -502,3 +614,76 @@ def test_build_source_page_always_has_non_empty_tags():
     # Frontmatter should have a tag list with at least one entry.
     fm_line = [ln for ln in page.splitlines() if ln.startswith("tags:")][0]
     assert "tags: []" not in fm_line, "synth pages must never have empty tags"
+
+
+# ─── strip_unresolved_wikilinks flag (docs/tasks/08) ────────────────────
+
+
+class _WikilinkBackend(BaseSynthesizer):
+    """Fake backend whose output contains an unresolved wikilink."""
+
+    def is_available(self) -> bool:
+        return True
+
+    def synthesize_source_page(self, raw_body, meta, prompt_template):
+        return "## Summary\n\nDiscussed [[MissingPage]] at length.\n"
+
+
+def _synthesize_wikilink_run(tmp_path: Path, **kwargs) -> str:
+    """Synthesize the seeded session; return the written page text."""
+    raw = _seed_raw(tmp_path)
+    wiki_sources = tmp_path / "wiki" / "sources"
+    wiki_sources.mkdir(parents=True)
+    log_file = tmp_path / "wiki" / "log.md"
+    log_file.write_text("# Log\n", encoding="utf-8")
+    summary = synthesize_new_sessions(
+        backend=_WikilinkBackend(),
+        raw_dir=raw,
+        wiki_sources_dir=wiki_sources,
+        log_path=log_file,
+        **kwargs,
+    )
+    assert summary["synthesized"] == 1
+    page = wiki_sources / "test-proj" / "2026-04-09-test-synth.md"
+    return page.read_text(encoding="utf-8")
+
+
+def test_strip_unresolved_wikilinks_false_keeps_links(tmp_path: Path):
+    content = _synthesize_wikilink_run(tmp_path, strip_unresolved_wikilinks=False)
+    assert "[[MissingPage]]" in content
+
+
+def test_strip_unresolved_wikilinks_true_strips_links(tmp_path: Path):
+    content = _synthesize_wikilink_run(tmp_path, strip_unresolved_wikilinks=True)
+    assert "[[MissingPage]]" not in content
+    assert "MissingPage" in content
+
+
+class _UnavailableBackend(DummySynthesizer):
+    @property
+    def name(self) -> str:
+        return "unavailable"
+
+    def is_available(self) -> bool:
+        return False
+
+    def synthesize_source_page(self, raw_body, meta, prompt_template):
+        raise AssertionError("unavailable backend must not be called")
+
+
+def test_force_with_unavailable_backend_keeps_existing_state(tmp_path: Path):
+    raw = _seed_raw(tmp_path)
+    state_file = tmp_path / "state.json"
+    state_file.write_text(json.dumps({"old/key.md": 123.0}), encoding="utf-8")
+
+    summary = synthesize_new_sessions(
+        backend=_UnavailableBackend(),
+        raw_dir=raw,
+        wiki_sources_dir=tmp_path / "wiki" / "sources",
+        force=True,
+        state_file=state_file,
+    )
+
+    assert summary["new_files"] == 1
+    assert any("not available" in error for error in summary["errors"])
+    assert json.loads(state_file.read_text(encoding="utf-8")) == {"old/key.md": 123.0}

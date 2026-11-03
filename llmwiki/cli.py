@@ -469,25 +469,74 @@ def cmd_lint(args: argparse.Namespace) -> int:
     return 0
 
 
+def _deep_merge(base: dict, override: dict) -> None:
+    """Merge ``override`` into ``base``; nested dicts merge, other values win."""
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            _deep_merge(base[key], value)
+        else:
+            base[key] = value
+
+
+def _load_run_config() -> dict:
+    """Load the tracked example, then gitignored per-checkout overrides.
+
+    Order: ``examples/sessions_config.json`` → ``config.json`` →
+    ``config.local.json``. Machine settings (backend URLs, API keys)
+    belong in an override, not in the shared example.
+    """
+    import json as _json
+
+    merged: dict = {}
+    for path in (
+        REPO_ROOT / "examples" / "sessions_config.json",
+        REPO_ROOT / "config.json",
+        REPO_ROOT / "config.local.json",
+    ):
+        if not path.is_file():
+            continue
+        try:
+            data = _json.loads(path.read_text(encoding="utf-8"))
+        except (_json.JSONDecodeError, OSError):
+            continue
+        if isinstance(data, dict):
+            _deep_merge(merged, data)
+    return merged
+
+
+def _config_int(value: Any, default: int, *, minimum: int = 1) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, parsed)
+
+
+def _config_bool(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() not in {"", "0", "false", "no", "off"}
+    if value is None:
+        return default
+    return bool(value)
+
+
 def cmd_synthesize(args: argparse.Namespace) -> int:
     """Synthesize wiki source pages from raw sessions (v1.1.0 · #35).
 
-    Uses the backend selected via ``synthesis.backend`` in
-    ``sessions_config.json`` (dummy | ollama). ``--check`` prints backend
-    availability without running synthesis — useful for diagnosing Ollama
-    connectivity before a long sync. ``--estimate`` prints a cached-vs-fresh
+    Uses the backend selected via ``synthesis.backend`` in the config
+    (dummy | ollama | openai | agent). ``--check`` prints backend
+    availability without running synthesis — useful for diagnosing a
+    server before a long sync. ``--estimate`` prints a cached-vs-fresh
     token + dollar breakdown before spending money (#50).
+
+    Config resolution: ``examples/sessions_config.json``, then the
+    gitignored ``config.json`` and ``config.local.json`` overrides.
     """
-    import json as _json
     from llmwiki.synth.pipeline import resolve_backend, synthesize_new_sessions
 
-    config: dict = {}
-    config_path = REPO_ROOT / "examples" / "sessions_config.json"
-    if config_path.is_file():
-        try:
-            config = _json.loads(config_path.read_text(encoding="utf-8"))
-        except (_json.JSONDecodeError, OSError):
-            config = {}
+    config: dict = _load_run_config()
 
     if args.estimate:
         return _synthesize_estimate(config)
@@ -500,19 +549,24 @@ def cmd_synthesize(args: argparse.Namespace) -> int:
 
     backend = resolve_backend(config)
     print(f"Backend: {backend.name}")
+    synth_cfg = config.get("synthesis", {}) or {}
+    max_workers = _config_int(synth_cfg.get("max_concurrency"), 1)
+    coalesce_low_signal = _config_bool(synth_cfg.get("coalesce_low_signal"), False)
+    coalesce_min_group = _config_int(synth_cfg.get("coalesce_min_group"), 3)
+    coalesce_window = str(synth_cfg.get("coalesce_window", "all") or "all")
+    strip_links = _config_bool(synth_cfg.get("strip_unresolved_wikilinks"), True)
+    if max_workers > 1:
+        print(f"Concurrency: {max_workers}")
+    if coalesce_low_signal:
+        print(
+            f"Coalesce low-signal sessions: on "
+            f"(min group {coalesce_min_group}, window {coalesce_window})"
+        )
 
     if args.check:
         available = backend.is_available()
         print(f"Available: {available}")
         return 0 if available else 1
-
-    if not backend.is_available():
-        print(
-            f"error: backend {backend.name} is not available. "
-            "Start the server or change synthesis.backend in config.",
-            file=sys.stderr,
-        )
-        return 1
 
     # #420: vault-overlay mode isolates raw/wiki/state to the vault root.
     vault_path = getattr(args, "vault", None)
@@ -538,6 +592,11 @@ def cmd_synthesize(args: argparse.Namespace) -> int:
         raw_dir=raw_dir,
         wiki_sources_dir=wiki_sources_dir,
         state_file=state_file,
+        max_workers=max_workers,
+        coalesce_low_signal=coalesce_low_signal,
+        coalesce_min_group=coalesce_min_group,
+        coalesce_window=coalesce_window,
+        strip_unresolved_wikilinks=strip_links,
     )
     print(
         f"Scanned {summary['total_scanned']}, new {summary['new_files']}, "
