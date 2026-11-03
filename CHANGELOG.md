@@ -12,6 +12,7 @@ Versions below 1.0 are pre-production — API and file formats may change.
 
 - **`llmwiki all --with-synth`** (#383) — opt-in chain that runs `synthesize` before `build → graph → export → lint`, so CLI users can fill `wiki/sources/` from `raw/` in one command without relying on agent slash skills. Companion flags: `--synth-force` (pass `--force` to synthesize), `--vault` (vault-overlay synthesize when using `--with-synth`).
 - **`llmwiki sync --status` synthesis hint** (#383) — reports the configured `synthesis.backend` and points to `llmwiki synthesize` / `llmwiki all --with-synth` when `wiki/sources/` may stay empty after sync.
+- **OpenAI-compatible synthesis backend** — `synthesis.backend: "openai"` talks to any `/v1` chat-completions server (vLLM, SGLang, LM Studio, LiteLLM) with stdlib HTTP. New keys: `api_key`, `max_tokens`, `temperature`, `enable_thinking`. A non-loopback `base_url` logs a privacy warning, matching the Ollama backend.
 
 ### Changed
 
@@ -103,6 +104,7 @@ Multi-agent code review remediation — 6 HIGH fixes from a 5-agent review of th
 - **`[graph]` / `[all]` extras now include `matplotlib` and `scipy`** — both are graph-pipeline runtime requirements that `graphifyy` does not declare; a fresh `pip install llmwiki[graph]` no longer leaves `llmwiki graph` crashing with `ImportError`/`ModuleNotFoundError` and falling back to the builtin engine.
 - **`llmwiki synthesize --estimate` labels the pricing backend** — when the configured `synthesis.backend` is not Claude (or its model is not in `MODEL_PRICING`), the estimate prints a note that the dollar figures use Claude API pricing and may not match the actual backend; a priced Claude model is now passed through to the report instead of always falling back to `DEFAULT_MODEL`.
 - **`query_graph` / `export_to_obsidian` read graphify's `links` key** — networkx renamed the `link` argument to `edges`; both call sites now pass `edges="links"` (with a `link=` fallback), so a graph written by graphify loads instead of raising.
+- **OpenAI-compatible backend retries only transient errors** — `_post_chat` no longer retries 400/401/403/404/422 (it raises immediately with the status and the first 200 characters of the body), and a 400 caused by `chat_template_kwargs` is retried once without that field, so strict OpenAI-compatible servers no longer pay three rejected attempts per page.
 
 ### Added
 

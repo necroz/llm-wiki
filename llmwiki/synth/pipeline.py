@@ -64,6 +64,8 @@ def resolve_backend(
     Supported values:
       - ``"dummy"`` (default) — canned offline backend for previews/tests
       - ``"ollama"`` — local Ollama HTTP backend (#35)
+      - ``"openai"`` — any OpenAI-compatible ``/v1`` server (vLLM,
+        SGLang, LM Studio, LiteLLM, hosted providers)
       - ``"agent"`` — defer to the running Claude Code / Codex CLI
         agent (#316). Writes pending prompts to
         ``.llmwiki-pending-prompts/`` for the slash-command layer to
@@ -81,6 +83,14 @@ def resolve_backend(
         from llmwiki.synth.ollama import OllamaSynthesizer, load_ollama_config
 
         return OllamaSynthesizer(config=load_ollama_config(cfg))
+
+    if name in {"openai", "openai-compatible", "openai_compat", "vllm"}:
+        from llmwiki.synth.openai_compat import (
+            OpenAICompatSynthesizer,
+            load_openai_config,
+        )
+
+        return OpenAICompatSynthesizer(config=load_openai_config(cfg))
 
     if name in {"agent", "agent_delegate", "agent-delegate"}:
         # Imported lazily — the agent backend is a thin file-I/O layer

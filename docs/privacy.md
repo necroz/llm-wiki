@@ -9,7 +9,7 @@ These are non-negotiable and enforced in both code and CI:
 1. **Redaction is ON by default.** Username, API keys, tokens, passwords, and emails are redacted before anything hits `raw/`.
 2. **Localhost-only binding.** The HTTP server binds to `127.0.0.1` unless you explicitly pass `--host 0.0.0.0`.
 3. **No telemetry, ever.** The tool never calls home. No usage counts, no adapter pings, no error uploads.
-4. **No network by default.** Everything runs offline after install. `--synthesize` is the one exception — it calls the local `claude` binary on your machine — and it's opt-in.
+4. **No network by default.** Everything runs offline after install. Synthesis is opt-in: the `dummy` backend is offline, a loopback `ollama` or `openai` server keeps transcripts on the machine, and a non-loopback `openai` `base_url` sends them off the machine (the backend logs a warning). Agent-delegate mode never makes an HTTP call.
 5. **raw/, wiki/, site/, and .ingestion-state.json are gitignored.** They never enter version control.
 6. **Privacy grep in CI.** GitHub Actions fails the build if any committed file contains the maintainer's real username.
 7. **Gitleaks in CI.** Secret scanning blocks merges on any detected API key, token, or password.
