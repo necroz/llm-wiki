@@ -16,6 +16,22 @@ from llmwiki.synth.pipeline import (
 )
 
 
+
+@pytest.fixture(autouse=True)
+def _isolated_synth_state(tmp_path, monkeypatch):
+    """Keep the real .llmwiki-synth-state.json out of test runs."""
+    monkeypatch.setattr(
+        "llmwiki.synth.pipeline.STATE_FILE",
+        tmp_path / "synth-state.json",
+    )
+
+
+def test_synth_state_is_isolated(tmp_path):
+    from llmwiki.synth import pipeline
+
+    assert pipeline.STATE_FILE.parent == tmp_path
+
+
 # ─── fixtures ────────────────────────────────────────────────────────────
 
 

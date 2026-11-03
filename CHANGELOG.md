@@ -17,6 +17,7 @@ Versions below 1.0 are pre-production — API and file formats may change.
 
 - **README quick-start + `/wiki-all`** (#383) — document that `sync` alone only fills `raw/`; semantic wiki pages require `synthesize` or `all --with-synth`.
 - **Generated wiki pages and synth state are no longer tracked** — `wiki/index.md`, `wiki/overview.md`, and `.llmwiki-synth-state.json` were already listed in `.gitignore`; they are now removed from the index, so a fresh clone and CI never see local source links or machine state.
+- **`tests/test_synth_pipeline.py` synth-state isolation** — autouse fixture points `llmwiki.synth.pipeline.STATE_FILE` at `tmp_path`, so running the tests no longer overwrites the real `.llmwiki-synth-state.json` (which forced a full-corpus re-synthesis on the next run).
 
 ## [1.3.82] — 2026-04-30
 
