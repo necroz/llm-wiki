@@ -101,6 +101,7 @@ Multi-agent code review remediation — 6 HIGH fixes from a 5-agent review of th
 - **`ensure_projects_index` emits valid frontmatter** — the generated `wiki/projects/index.md` now uses `type: navigation` and `topics: [projects]` instead of `type: index` / `tags: [index, projects]`, which `frontmatter_validity` and `tags_topics_convention` reject; a plain `sync --auto-build` no longer turns a clean wiki into a lint error.
 - **`build_graphify_graph` forces overwrite of `graphify-out/graph.json`** — the bridge now passes `force=True` to `to_json`, so `llmwiki graph` replaces the saved graph after pages are deleted or coalesced instead of printing "Refusing to overwrite" and leaving stale output.
 - **`[graph]` / `[all]` extras now include `matplotlib` and `scipy`** — both are graph-pipeline runtime requirements that `graphifyy` does not declare; a fresh `pip install llmwiki[graph]` no longer leaves `llmwiki graph` crashing with `ImportError`/`ModuleNotFoundError` and falling back to the builtin engine.
+- **`llmwiki synthesize --estimate` labels the pricing backend** — when the configured `synthesis.backend` is not Claude (or its model is not in `MODEL_PRICING`), the estimate prints a note that the dollar figures use Claude API pricing and may not match the actual backend; a priced Claude model is now passed through to the report instead of always falling back to `DEFAULT_MODEL`.
 
 ### Added
 

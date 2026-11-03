@@ -7,6 +7,7 @@ Covers:
 * Partial progress → incremental < full_force.
 * Prefix-too-small warning surfaces into ``warnings`` bucket.
 * Custom model + custom output_tokens override pricing.
+* Non-Claude backends get a "Claude pricing" caveat note (card 06).
 * CLI subprocess prints the expected layout.
 * Money numbers are non-negative and full_force ≥ incremental.
 """
@@ -210,6 +211,65 @@ def test_prefix_tokens_auto_computed_from_real_files(tmp_path, monkeypatch):
         # prefix_tokens deliberately NOT passed
     )
     assert rpt["prefix_tokens"] > 0
+
+
+# ─── _synthesize_estimate: backend-honesty note (card 06) ───────────────
+
+
+def _stub_report(**_kwargs) -> dict:
+    """Disk-free stand-in for synthesize_estimate_report (fast tests)."""
+    return {
+        "corpus": 3,
+        "synthesized": 2,
+        "new": 1,
+        "incremental_usd": 0.0123,
+        "full_force_usd": 0.0456,
+        "prefix_tokens": 2000,
+        "model": "claude-sonnet-4-6",
+        "warnings": [],
+    }
+
+
+def test_estimate_notes_openai_backend_with_unpriced_model(capsys, monkeypatch):
+    """Card 06: an openai-compatible backend must not present Claude
+    dollars as if they were real."""
+    from llmwiki.cli import _synthesize_estimate
+
+    monkeypatch.setattr("llmwiki.cli.synthesize_estimate_report", _stub_report)
+    _synthesize_estimate({"synthesis": {"backend": "openai", "model": "qwen3.8"}})
+    out = capsys.readouterr().out
+    assert "note: cost estimate uses Claude API pricing" in out
+    assert "backend 'openai'" in out
+
+
+def test_estimate_notes_dummy_backend(capsys, monkeypatch):
+    from llmwiki.cli import _synthesize_estimate
+
+    monkeypatch.setattr("llmwiki.cli.synthesize_estimate_report", _stub_report)
+    _synthesize_estimate({"synthesis": {"backend": "dummy"}})
+    out = capsys.readouterr().out
+    assert "note: cost estimate uses Claude API pricing" in out
+    assert "backend 'dummy'" in out
+
+
+def test_estimate_silent_for_priced_claude_backend(capsys, monkeypatch):
+    """No note when the backend is Claude and the model is priced; the
+    configured model is passed through to the report."""
+    from llmwiki.cache import MODEL_PRICING
+    from llmwiki.cli import _synthesize_estimate
+
+    seen: dict = {}
+
+    def _capture(**kwargs):
+        seen.update(kwargs)
+        return _stub_report(**kwargs)
+
+    monkeypatch.setattr("llmwiki.cli.synthesize_estimate_report", _capture)
+    model = next(iter(MODEL_PRICING))
+    _synthesize_estimate({"synthesis": {"backend": "anthropic", "model": model}})
+    out = capsys.readouterr().out
+    assert "note:" not in out
+    assert seen.get("model") == model
 
 
 # ─── CLI subprocess smoke tests ──────────────────────────────────────────

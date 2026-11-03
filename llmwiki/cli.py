@@ -490,7 +490,7 @@ def cmd_synthesize(args: argparse.Namespace) -> int:
             config = {}
 
     if args.estimate:
-        return _synthesize_estimate()
+        return _synthesize_estimate(config)
 
     # #316: agent-delegate operations that don't need a backend.
     if args.list_pending:
@@ -555,7 +555,7 @@ def cmd_synthesize(args: argparse.Namespace) -> int:
 # llmwiki/synth/cli_helpers.py and re-exported at top of file (#691).
 
 
-def _synthesize_estimate() -> int:
+def _synthesize_estimate(config: dict | None = None) -> int:
     """Print the G-07 incremental-vs-full-force cost report (v1.1.0 · #50 · #293).
 
     Transparency over one-liner: reads the state file so the user sees
@@ -563,7 +563,21 @@ def _synthesize_estimate() -> int:
     a single number without saying whether it covered the whole corpus
     or just the delta.
     """
-    report = synthesize_estimate_report()
+    from llmwiki.cache import MODEL_PRICING
+
+    synth = (config or {}).get("synthesis", {}) or {}
+    backend = str(synth.get("backend") or "dummy")
+    model = str(synth.get("model") or "")
+    priced = model in MODEL_PRICING
+
+    if backend not in {"anthropic", "claude"} or (model and not priced):
+        print(
+            f"note: cost estimate uses Claude API pricing; "
+            f"backend {backend!r} may bill differently "
+            f"(local models are usually free)."
+        )
+
+    report = synthesize_estimate_report(model=model if priced else None)
 
     for w in report["warnings"]:
         print(f"warning: {w}")
