@@ -5,8 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import llmwiki.graph as graph_mod
+from llmwiki._frontmatter import parse_frontmatter
 from llmwiki.build import ensure_projects_index
 from llmwiki.graph import HTML_TEMPLATE, build_session_graph, scan_pages, write_html
+from llmwiki.lint.rules.frontmatter_validity import FrontmatterValidity
 
 
 def _write_raw(
@@ -194,9 +196,26 @@ def test_ensure_projects_index_links_stubs(tmp_path: Path) -> None:
     assert index is not None
     text = index.read_text(encoding="utf-8")
     assert 'title: "Projects"' in text
-    assert "type: index" in text
+    assert "type: navigation" in text
+    assert "topics: [projects]" in text
+    assert "type: index" not in text
+    assert "tags: [index, projects]" not in text
     assert "[[alpha]]" in text
     assert "[[beta]]" in text
     assert "Alpha project" in text
     assert "Beta project" in text
     assert "[[index]]" not in text
+
+
+def test_ensure_projects_index_frontmatter_passes_lint(tmp_path: Path) -> None:
+    projects = tmp_path / "wiki" / "projects"
+    projects.mkdir(parents=True)
+    (projects / "alpha.md").write_text(
+        '---\ntitle: "alpha"\ndescription: "Alpha project"\n---\n\n# alpha\n',
+        encoding="utf-8",
+    )
+
+    index = ensure_projects_index(projects)
+    meta, _ = parse_frontmatter(index.read_text(encoding="utf-8"))
+    issues = FrontmatterValidity().run({"projects/index": {"meta": meta}})
+    assert issues == []

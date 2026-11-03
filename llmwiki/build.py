@@ -353,8 +353,8 @@ def ensure_projects_index(meta_dir: Path) -> Path | None:
     lines = [
         "---",
         'title: "Projects"',
-        "type: index",
-        "tags: [index, projects]",
+        "type: navigation",
+        "topics: [projects]",
         f"last_updated: {datetime.now(timezone.utc).date().isoformat()}",
         "---",
         "",
