@@ -188,3 +188,19 @@ def test_extract_wiki_nodes_project_proximity_capped_at_5(tmp_path):
     # With 10 pages and max 5 forward neighbours each, the number should be
     # 5+5+5+5+5+4+3+2+1+0 = 35 (not 10*9/2 = 45)
     assert len(proximity) == 35
+
+
+# ─── to_json overwrite contract ──────────────────────────────────────
+
+
+@pytest.mark.skipif(
+    not _GRAPHIFY_INSTALLED,
+    reason="graphify is an optional dependency",
+)
+def test_build_graphify_graph_forces_overwrite():
+    import inspect
+    from llmwiki.graphify_bridge import build_graphify_graph
+
+    source = inspect.getsource(build_graphify_graph)
+    assert "force=True" in source
+    assert "to_json(" in source

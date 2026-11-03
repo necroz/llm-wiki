@@ -329,7 +329,10 @@ def build_graphify_graph(
     graphml_path = GRAPHIFY_OUT / "graph.graphml"
     report_path = GRAPHIFY_OUT / "GRAPH_REPORT.md"
 
-    to_json(G, communities, str(json_path))
+    # llmwiki owns this graph: it is regenerated from wiki/ on every run.
+    # Without force=True, graphify refuses to shrink a graph after pages
+    # are deleted or coalesced.
+    to_json(G, communities, str(json_path), force=True)
     to_html(G, communities, str(html_path), community_labels=labels)
     report_path.write_text(report_md, encoding="utf-8")
 
