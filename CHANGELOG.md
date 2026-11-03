@@ -102,6 +102,7 @@ Multi-agent code review remediation — 6 HIGH fixes from a 5-agent review of th
 - **`build_graphify_graph` forces overwrite of `graphify-out/graph.json`** — the bridge now passes `force=True` to `to_json`, so `llmwiki graph` replaces the saved graph after pages are deleted or coalesced instead of printing "Refusing to overwrite" and leaving stale output.
 - **`[graph]` / `[all]` extras now include `matplotlib` and `scipy`** — both are graph-pipeline runtime requirements that `graphifyy` does not declare; a fresh `pip install llmwiki[graph]` no longer leaves `llmwiki graph` crashing with `ImportError`/`ModuleNotFoundError` and falling back to the builtin engine.
 - **`llmwiki synthesize --estimate` labels the pricing backend** — when the configured `synthesis.backend` is not Claude (or its model is not in `MODEL_PRICING`), the estimate prints a note that the dollar figures use Claude API pricing and may not match the actual backend; a priced Claude model is now passed through to the report instead of always falling back to `DEFAULT_MODEL`.
+- **`query_graph` / `export_to_obsidian` read graphify's `links` key** — networkx renamed the `link` argument to `edges`; both call sites now pass `edges="links"` (with a `link=` fallback), so a graph written by graphify loads instead of raising.
 
 ### Added
 

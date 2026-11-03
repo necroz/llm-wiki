@@ -210,3 +210,24 @@ def test_build_graphify_graph_forces_overwrite():
     source = inspect.getsource(build_graphify_graph)
     assert "force=True" in source
     assert "to_json(" in source
+
+
+def test_query_graph_reads_links_keyed_export(tmp_path, monkeypatch):
+    from llmwiki import graphify_bridge
+
+    graph = {
+        "directed": False,
+        "multigraph": False,
+        "graph": {},
+        "nodes": [
+            {"id": "a", "label": "Alpha", "type": "entity"},
+            {"id": "b", "label": "Beta", "type": "concept"},
+        ],
+        "links": [{"source": "a", "target": "b"}],
+    }
+    (tmp_path / "graph.json").write_text(json.dumps(graph), encoding="utf-8")
+    monkeypatch.setattr(graphify_bridge, "GRAPHIFY_OUT", tmp_path)
+
+    result = graphify_bridge.query_graph("alpha")
+
+    assert "Alpha" in result

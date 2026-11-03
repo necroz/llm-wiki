@@ -415,7 +415,10 @@ def export_to_obsidian(vault_path: Path) -> Path:
     import networkx as nx
     from networkx.readwrite import json_graph
     data = json.loads(json_path.read_text(encoding="utf-8"))
-    G = json_graph.node_link_graph(data)
+    try:
+        G = json_graph.node_link_graph(data, edges="links")
+    except TypeError:
+        G = json_graph.node_link_graph(data, link="links")
 
     communities: dict[int, list[str]] = {}
     for nid, ndata in G.nodes(data=True):
@@ -444,7 +447,11 @@ def query_graph(question: str, *, depth: int = 3, token_budget: int = 2000) -> s
     from networkx.readwrite import json_graph
 
     data = json.loads(json_path.read_text(encoding="utf-8"))
-    G = json_graph.node_link_graph(data)
+    # graphify exports edges under "links", not networkx's default "edges".
+    try:
+        G = json_graph.node_link_graph(data, edges="links")
+    except TypeError:
+        G = json_graph.node_link_graph(data, link="links")
 
     keywords = question.lower().split()
     # Score nodes by keyword match + connectivity bonus
