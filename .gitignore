@@ -180,6 +180,9 @@ tests/e2e/screenshots/
 test-results/
 playwright-report/
 
+# ─── Local git worktrees ─────────────────────────────────────────────────
+.worktrees/
+
 # ─── Claude Code worktrees + plans ───────────────────────────────────────
 .claude/worktrees/
 .claude/plans/
