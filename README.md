@@ -304,7 +304,11 @@ setup.bat
 
 ### With pip (v0.3+)
 
+`setup.sh` / `setup.bat` already create a local `.venv` and install the
+package into it. To manage dependencies manually:
+
 ```bash
+python3 -m venv .venv && . .venv/bin/activate
 pip install -e .                # basic — everything you need
 pip install -e '.[graph]'       # + graphifyy AI-powered graph engine (with matplotlib + scipy)
 pip install -e '.[dev]'         # + pytest + ruff
@@ -312,15 +316,45 @@ pip install -e '.[e2e]'         # + Playwright + pytest-bdd + pytest-html (E2E)
 pip install -e '.[all]'         # graph + everything
 ```
 
+The wrapper scripts (`sync.sh`, `build.sh`, `serve.sh`) automatically use
+`.venv/bin/python` when it exists, so they keep working in a fresh shell
+without activation. To use the `llmwiki` console command directly, either
+activate the venv (`source .venv/bin/activate`) or call
+`.venv/bin/llmwiki`.
+
 Syntax highlighting is now powered by [highlight.js](https://highlightjs.org/), loaded from a CDN at view time — no optional deps required.
 
 ### What setup does
 
-1. Creates `raw/`, `wiki/`, `site/` data directories
-2. Installs the `llmwiki` Python package in-place
-3. Detects your coding agents and enables matching adapters
-4. Optionally offers to install the `SessionStart` hook into `~/.claude/settings.json` for auto-sync
-5. Runs a first sync so you see output immediately
+1. Creates a checkout-local `.venv` (avoids PEP 668 / system-Python conflicts)
+2. Installs the `llmwiki` package in-place into that venv
+3. Creates `raw/`, `wiki/`, `site/` data directories
+4. Detects your coding agents and enables matching adapters
+5. Runs a first sync-status probe and `llmwiki doctor`
+6. Prints the optional `SessionStart` hook for Claude Code
+
+### ZCode
+
+ZCode stores sessions in SQLite, not JSONL. Run the exporter once, then
+sync as usual:
+
+```bash
+source .venv/bin/activate
+llmwiki zcode export
+llmwiki sync
+```
+
+`llmwiki sync` refreshes the ZCode JSONL corpus automatically when
+`~/.zcode/cli/db/db.sqlite` exists. To install the Stop-hook and a
+native scheduler (systemd, launchd, or Task Scheduler):
+
+```bash
+llmwiki zcode install --dry-run     # inspect
+llmwiki zcode install               # auto-detect scheduler
+llmwiki zcode autosync --build      # run one cycle manually
+```
+
+See [ZCODE.md](ZCODE.md) for details.
 
 ## For maintainers
 
@@ -421,10 +455,15 @@ For a daily / weekly cron-style sync, schedule `llmwiki sync` directly via your 
 
 ```bash
 llmwiki init                    # scaffold raw/ wiki/ site/ + seed nav files
-llmwiki sync                    # convert .jsonl → markdown (auto-build + auto-lint if configured)
+llmwiki sync                    # export ZCode + convert .jsonl → markdown (auto-build/lint if configured)
 llmwiki build                   # compile static HTML + AI exports
 llmwiki serve                   # local HTTP server on 127.0.0.1:8765
 llmwiki adapters                # list available adapters + configured state (v1.0)
+llmwiki doctor                  # check Python, deps, config, and ZCode paths
+llmwiki audit                   # scan for usernames/secrets before publishing
+llmwiki zcode export            # export ZCode's SQLite store to JSONL
+llmwiki zcode autosync          # portable export → convert → build
+llmwiki zcode install           # Stop hook + systemd/launchd/Task Scheduler
 llmwiki graph                   # build knowledge graph (v0.2)
 llmwiki lint                    # 16-rule wiki lint (v1.2)
 llmwiki export <format>         # AI-consumable exports (v0.4)
@@ -433,7 +472,10 @@ llmwiki all                     # build → graph → export → lint in one sho
 llmwiki version
 ```
 
-Each subcommand has its own `--help`. All commands are also wrapped in one-click shell/batch scripts: `sync.sh`/`.bat`, `build.sh`/`.bat`, `serve.sh`/`.bat`, `upgrade.sh`/`.bat`.
+Each subcommand has its own `--help`. After `setup.sh`, either activate
+`.venv` (`source .venv/bin/activate`) or call `.venv/bin/llmwiki`; the
+one-click wrappers (`sync.sh`/`.bat`, `build.sh`/`.bat`, `serve.sh`/`.bat`,
+`upgrade.sh`/`.bat`) select the venv interpreter automatically.
 
 ## Works with
 
@@ -482,16 +524,27 @@ Register in your MCP client's config — e.g. for Claude Desktop, add to `~/Libr
 {
   "mcpServers": {
     "llmwiki": {
-      "command": "python3",
-      "args": ["-m", "llmwiki.mcp"]
+      "command": "/absolute/path/to/llm-wiki/.venv/bin/python",
+      "args": ["-m", "llmwiki.mcp"],
+      "cwd": "/absolute/path/to/llm-wiki"
     }
   }
 }
 ```
 
+Use the checkout's venv interpreter and set `cwd` to the repository
+root: the MCP server resolves `raw/`, `wiki/`, and `site/` relative to
+it. On Windows the command is `.venv\Scripts\python.exe`.
+
 ## Configuration
 
-Single JSON config at `examples/sessions_config.json`. For machine-specific settings (backend URL, API key), put them in a gitignored `config.json` or `config.local.json` at the repo root — `llmwiki synthesize` merges them over the example (`config.local.json` wins). Full example:
+The shared config lives at `examples/sessions_config.json`. For machine-specific settings (backend URL, API key, redaction patterns, adapter toggles), put them in a gitignored `config.json` or `config.local.json` at the repo root. Every CLI command merges them over the example, with `config.local.json` winning:
+
+```
+examples/sessions_config.json  →  config.json  →  config.local.json
+```
+
+Full example:
 
 ```json
 {

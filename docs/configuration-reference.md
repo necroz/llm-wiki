@@ -29,6 +29,8 @@ python3 -m llmwiki sync [options]
 | `--project` | `substring` | none | Only sync projects whose slug contains this |
 | `--include-current` | flag | off | Don't skip live sessions (< 60 min old) |
 | `--force` | flag | off | Ignore state file, reconvert everything |
+| `--zcode-export` / `--no-zcode-export` | flag | on | Refresh ZCode's JSONL corpus before converting |
+| `--zcode-db` | `path` | `~/.zcode/cli/db/db.sqlite` | ZCode database path |
 | `--dry-run` | flag | off | Preview what would be written |
 | `--download-images` | flag | off | Download remote images in `.md` files to `raw/assets/` |
 
@@ -127,13 +129,22 @@ python3 -m llmwiki version
 
 ## Config file (`config.json`)
 
-Copy the example and edit:
+Every CLI command loads a layered config:
+
+```
+examples/sessions_config.json  →  config.json  →  config.local.json
+```
+
+`config.json` and `config.local.json` are gitignored. Nested objects
+merge, so a local file can override only the keys it needs; lists
+replace the base list. This is where machine-specific backend URLs,
+API keys, redaction patterns, and adapter toggles belong.
+
+To start from the full example:
 
 ```bash
 cp examples/sessions_config.json config.json
 ```
-
-`config.json` is gitignored. The converter auto-loads it if present at the repo root.
 
 ### Full schema
 
@@ -212,7 +223,10 @@ cp examples/sessions_config.json config.json
 | `synthesis` | `coalesce_low_signal` | bool | false | Merge no-op sessions into one cluster page |
 | `synthesis` | `coalesce_min_group` | int | 3 | Minimum group size for coalescing |
 | `synthesis` | `coalesce_window` | enum | `"all"` | Cluster window: `"all"` / `"month"` |
+| `synthesis` | `lock_skip_patterns` | list | worker defaults | Phrases that mark a lock-skip; `[]` disables the rule |
 | `synthesis` | `strip_unresolved_wikilinks` | bool | true | Degrade links to missing pages to plain text |
+| `zcode` | `enabled` | bool | true | Include the ZCode adapter in auto-selection |
+| `zcode` | `project_roots` | list | `[]` | Extra roots for project-slug detection (e.g. `["~/dev"]`) |
 | `meeting` | `enabled` | bool | false | Opt-in; non-AI adapter |
 | `meeting` | `source_dirs` | list | `["~/Meetings"]` | Directories to scan |
 | `meeting` | `extensions` | list | `[".vtt", ".srt"]` | File extensions to consider |

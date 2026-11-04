@@ -55,24 +55,19 @@ DEFAULT_CONFIG: dict[str, Any] = {
 
 # ─── config + state ────────────────────────────────────────────────────────
 
-def load_config(path: Path) -> dict[str, Any]:
+def _apply_config_defaults(user: dict[str, Any]) -> dict[str, Any]:
+    """Merge one config dict over ``DEFAULT_CONFIG`` and auto-detect the user."""
     # #arch-l6 (#628): the json.loads(json.dumps(...)) idiom was a
     # round-trip deep-copy from the era before copy.deepcopy was a
     # builtin import. copy.deepcopy is ~5× faster and avoids the
     # implicit "JSON-serializable types only" constraint.
     import copy
     cfg: dict[str, Any] = copy.deepcopy(DEFAULT_CONFIG)
-    if path.exists():
-        try:
-            user = json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as e:
-            print(f"  warning: bad config {path}: {e}", file=sys.stderr)
-            return cfg
-        for section, value in user.items():
-            if isinstance(value, dict) and isinstance(cfg.get(section), dict):
-                cfg[section].update(value)
-            else:
-                cfg[section] = value
+    for section, value in user.items():
+        if isinstance(value, dict) and isinstance(cfg.get(section), dict):
+            cfg[section].update(value)
+        else:
+            cfg[section] = value
     # Auto-detect username if not set. #489: be careful here.
     #
     # The previous logic was `os.environ["USER"] or Path.home().name`.
@@ -116,6 +111,37 @@ def load_config(path: Path) -> dict[str, Any]:
         except Exception:
             pass
     return cfg
+
+
+def load_config(path: Path) -> dict[str, Any]:
+    """Load one config file over the built-in defaults.
+
+    Kept for callers that pass an explicit path (tests, programmatic
+    use). CLI commands use :func:`load_config_layered` so gitignored
+    local overrides are honoured.
+    """
+    user: dict[str, Any] = {}
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as e:
+            print(f"  warning: bad config {path}: {e}", file=sys.stderr)
+            return _apply_config_defaults({})
+        if isinstance(data, dict):
+            user = data
+    return _apply_config_defaults(user)
+
+
+def load_config_layered(repo_root: Path | None = None) -> dict[str, Any]:
+    """Load ``examples/sessions_config.json`` plus local overrides.
+
+    Precedence: example → ``config.json`` → ``config.local.json``.
+    This is the config every CLI command should use, so a machine-local
+    redaction or adapter setting is not silently ignored by ``sync``.
+    """
+    from llmwiki.config import resolve_config
+
+    return _apply_config_defaults(resolve_config(repo_root))
 
 
 def _raw_write_guard(
@@ -1357,7 +1383,7 @@ def convert_all(
     adapters: list[str] | None = None,
     out_dir: Path = DEFAULT_OUT_DIR,
     state_file: Path = DEFAULT_STATE_FILE,
-    config_file: Path = DEFAULT_CONFIG_FILE,
+    config_file: Optional[Path] = None,
     ignore_file: Path = DEFAULT_IGNORE_FILE,
     since: Optional[str] = None,
     project: Optional[str] = None,
@@ -1365,8 +1391,14 @@ def convert_all(
     force: bool = False,
     dry_run: bool = False,
 ) -> int:
-    """Main entry: convert new sessions across all enabled adapters."""
-    config = load_config(config_file)
+    """Main entry: convert new sessions across all enabled adapters.
+
+    ``config_file=None`` (the CLI default) loads the canonical example
+    plus gitignored ``config.json`` / ``config.local.json`` overrides.
+    Pass an explicit path to load exactly one file (programmatic callers
+    and tests).
+    """
+    config = load_config(config_file) if config_file is not None else load_config_layered()
     state = {} if force else load_state(state_file, adapter_names=list(REGISTRY.keys()))
     redact = Redactor(config)
     ignore = IgnoreMatcher.from_file(ignore_file)

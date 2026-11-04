@@ -11,6 +11,7 @@ from llmwiki.synth.pipeline import (
     _coalesce_low_signal_sessions,
     _render_cluster_page,
     low_signal_reason,
+    synthesize_new_sessions,
 )
 
 NO_RESPONSE_BODY = """### Turn 1 — User
@@ -73,6 +74,41 @@ def test_low_signal_reason_classifies_three_shapes():
     assert low_signal_reason(_meta("a", "2026-01-01", tools=0), NO_RESPONSE_BODY) == "no-response"
     assert low_signal_reason(_meta("b", "2026-01-02", tools=1, output=400), LOCK_SKIP_BODY) == "lock-skip"
     assert low_signal_reason(_meta("c", "2026-01-03", tools=9, output=900), WORK_BODY) is None
+
+
+def test_lock_skip_patterns_are_configurable():
+    body = LOCK_SKIP_BODY.replace(
+        "RUN.lock существует и его возраст 30 минут — завершаюсь сразу, без действий.",
+        "another run holds the lock; exiting without changes.",
+    )
+
+    assert (
+        low_signal_reason(
+            _meta("a", "2026-01-01", tools=1),
+            body,
+            lock_skip_patterns=["another run holds the lock"],
+        )
+        == "lock-skip"
+    )
+    assert (
+        low_signal_reason(
+            _meta("b", "2026-01-02", tools=1),
+            body,
+            lock_skip_patterns=["RUN.lock существует"],
+        )
+        is None
+    )
+
+
+def test_empty_lock_skip_patterns_disable_that_rule():
+    assert (
+        low_signal_reason(
+            _meta("a", "2026-01-01", tools=1),
+            LOCK_SKIP_BODY,
+            lock_skip_patterns=[],
+        )
+        is None
+    )
 
 
 def test_coalesce_replaces_members_with_one_cluster_page(tmp_path):
@@ -231,3 +267,87 @@ def test_stale_cluster_page_is_removed_and_members_requeued(tmp_path):
     assert not cluster.exists()
     assert not manifest.exists()
     assert state == {}
+
+def test_synthesize_coalesce_only_needs_no_backend(tmp_path):
+    raw = tmp_path / "raw"
+    sources = tmp_path / "wiki" / "sources"
+
+    for index, slug in enumerate(("s1", "s2", "s3"), 1):
+        date = f"2026-01-0{index}"
+        page = raw / f"{date}-{slug}.md"
+        page.parent.mkdir(parents=True, exist_ok=True)
+        page.write_text(
+            "---\n"
+            f"slug: {slug}\n"
+            f"date: {date}\n"
+            "project: proj\n"
+            "tool_calls: 0\n"
+            'token_totals: \'{"output": 0}\'\n'
+            "---\n"
+            f"{NO_RESPONSE_BODY}",
+            encoding="utf-8",
+        )
+        _individual_page(sources, _meta(slug, date, tools=0))
+
+    summary = synthesize_new_sessions(
+        backend=None,
+        raw_dir=raw,
+        wiki_sources_dir=sources,
+        state_file=tmp_path / "state.json",
+        coalesce_only=True,
+        coalesce_low_signal=True,
+        coalesce_min_group=3,
+    )
+
+    assert summary["synthesized"] == 0
+    assert summary["coalesced"] == 1
+    assert summary["backend"] == "none"
+    assert (sources / "proj" / "2026-noop-sessions.md").is_file()
+
+
+def test_synthesize_parser_accepts_coalesce_only():
+    from llmwiki.cli import build_parser
+
+    args = build_parser().parse_args(["synthesize", "--coalesce-only"])
+
+    assert args.coalesce_only is True
+
+
+def test_cmd_synthesize_coalesce_only_skips_backend_probe(monkeypatch):
+    import argparse
+    from unittest.mock import MagicMock
+
+    from llmwiki import cli
+
+    args = argparse.Namespace(
+        coalesce_only=True,
+        check=False,
+        estimate=False,
+        list_pending=False,
+        complete=None,
+        force=False,
+        vault=None,
+    )
+    monkeypatch.setattr(cli, "_load_run_config", lambda: {"synthesis": {}})
+    monkeypatch.setattr(
+        "llmwiki.synth.pipeline.resolve_backend",
+        MagicMock(side_effect=AssertionError("backend must not be resolved")),
+    )
+    synth = MagicMock(
+        return_value={
+            "total_scanned": 0,
+            "new_files": 0,
+            "synthesized": 0,
+            "skipped": 0,
+            "errors": [],
+            "coalesced": 0,
+            "backend": "none",
+        }
+    )
+    monkeypatch.setattr("llmwiki.synth.pipeline.synthesize_new_sessions", synth)
+
+    rc = cli.cmd_synthesize(args)
+
+    assert rc == 0
+    assert synth.call_args.kwargs["backend"] is None
+    assert synth.call_args.kwargs["coalesce_only"] is True

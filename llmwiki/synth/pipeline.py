@@ -385,6 +385,16 @@ def _discover_raw_sessions(
 _TURN_MARKER = re.compile(r"^### Turn \d+ — (User|Assistant)\s*$", re.MULTILINE)
 _WIKILINK_RE = re.compile(r"\[\[([^\]|]+)(?:\|([^\]]*))?\]\]")
 
+# Default phrases used by the autonomous worker this feature was built
+# for. They are a fallback, not the contract: set
+# ``synthesis.lock_skip_patterns`` to match another worker's wording,
+# or to ``[]`` to disable lock-skip detection entirely.
+DEFAULT_LOCK_SKIP_PATTERNS = (
+    "run.lock существует",
+    "завершаюсь сразу",
+    "запуск пропущен",
+)
+
 
 def _strip_unresolved_wikilinks(wiki_dir: Path, sources_dir: Path) -> int:
     """Replace wikilinks whose target page does not exist with plain text.
@@ -444,7 +454,11 @@ def _output_tokens(meta: dict[str, Any]) -> int:
         return 0
 
 
-def low_signal_reason(meta: dict[str, Any], body: str) -> str | None:
+def low_signal_reason(
+    meta: dict[str, Any],
+    body: str,
+    lock_skip_patterns: tuple[str, ...] | list[str] | None = None,
+) -> str | None:
     """Classify a session that produced no work, or return None.
 
     Only two shapes qualify:
@@ -453,7 +467,9 @@ def low_signal_reason(meta: dict[str, Any], body: str) -> str | None:
       non-empty assistant turn. A provider quota/limit failure leaves
       exactly this shape.
     * ``lock-skip`` — the worker exited immediately because another run
-      held ``RUN.lock`` (at most three tool calls).
+      held a lock (at most three tool calls). The phrases are configurable
+      through ``synthesis.lock_skip_patterns``; an empty list disables
+      this rule.
 
     Anything with a commit, a non-empty answer, or more than three tool
     calls is deliberately excluded.
@@ -465,11 +481,14 @@ def low_signal_reason(meta: dict[str, Any], body: str) -> str | None:
     last = next((a.strip() for a in reversed(assistants) if a.strip()), "")
     if tools == 0 and not last and _output_tokens(meta) == 0:
         return "no-response"
+    patterns = (
+        DEFAULT_LOCK_SKIP_PATTERNS
+        if lock_skip_patterns is None
+        else tuple(lock_skip_patterns)
+    )
     low = last.lower()
-    if (
-        tools <= 3
-        and "run.lock существует" in low
-        and ("завершаюсь сразу" in low or "запуск пропущен" in low)
+    if tools <= 3 and any(
+        str(pattern).lower() in low for pattern in patterns if str(pattern).strip()
     ):
         return "lock-skip"
     return None
@@ -517,7 +536,11 @@ def _quote_from(text: str, needle: str = "", limit: int = 220) -> str:
 
 
 def _render_cluster_page(
-    project: str, rows: list[dict[str, Any]], *, page_name: str
+    project: str,
+    rows: list[dict[str, Any]],
+    *,
+    page_name: str,
+    lock_skip_patterns: tuple[str, ...] | list[str] | None = None,
 ) -> str:
     """Render one deterministic page for a group of low-signal sessions."""
     rows = sorted(rows, key=lambda r: (str(r.get("date") or ""), r["slug"]))
@@ -592,12 +615,20 @@ def _render_cluster_page(
     if first_prompt:
         lines.append(f'> "{first_prompt}" — representative worker prompt.')
     lock_quote = ""
+    patterns = (
+        DEFAULT_LOCK_SKIP_PATTERNS
+        if lock_skip_patterns is None
+        else tuple(lock_skip_patterns)
+    )
     for row in rows:
         if row["reason"] != "lock-skip":
             continue
         assistants = _split_turns(row["body"])[1]
         last = next((a for a in reversed(assistants) if a.strip()), "")
-        lock_quote = _quote_from(last, needle="RUN.lock существует")
+        for pattern in patterns:
+            lock_quote = _quote_from(last, needle=str(pattern))
+            if lock_quote:
+                break
         if lock_quote:
             break
     if lock_quote:
@@ -752,6 +783,7 @@ def _coalesce_low_signal_sessions(
     raw_dir: Path,
     min_group: int,
     window: str,
+    lock_skip_patterns: tuple[str, ...] | list[str] | None = None,
 ) -> tuple[int, set[str], set[str]]:
     """Replace low-signal per-session pages with one cluster page each.
 
@@ -761,7 +793,7 @@ def _coalesce_low_signal_sessions(
     """
     groups: dict[str, list[dict[str, Any]]] = {}
     for p, meta, body in sessions:
-        reason = low_signal_reason(meta, body)
+        reason = low_signal_reason(meta, body, lock_skip_patterns=lock_skip_patterns)
         if not reason:
             continue
         project = str(meta.get("project") or p.parent.name)
@@ -798,7 +830,12 @@ def _coalesce_low_signal_sessions(
         produced.setdefault(project, set()).add(page_name)
         page_path = sources_out / project / page_name
         page_path.parent.mkdir(parents=True, exist_ok=True)
-        content = _render_cluster_page(project, rows, page_name=page_name)
+        content = _render_cluster_page(
+            project,
+            rows,
+            page_name=page_name,
+            lock_skip_patterns=lock_skip_patterns,
+        )
         changed = False
         if not page_path.exists() or page_path.read_text(encoding="utf-8") != content:
             page_path.write_text(content, encoding="utf-8")
@@ -1146,6 +1183,8 @@ def synthesize_new_sessions(
     coalesce_low_signal: bool = False,
     coalesce_min_group: int = 3,
     coalesce_window: str = "all",
+    lock_skip_patterns: tuple[str, ...] | list[str] | None = None,
+    coalesce_only: bool = False,
     strip_unresolved_wikilinks: bool = True,
 ) -> dict[str, Any]:
     """Main entry point. Returns a summary dict:
@@ -1198,6 +1237,7 @@ def synthesize_new_sessions(
             raw_dir=raw_root,
             min_group=max(1, int(coalesce_min_group)),
             window=coalesce_window,
+            lock_skip_patterns=lock_skip_patterns,
         )
         summary["coalesced"] = clusters
         summary["coalesced_projects"] = sorted(affected)
@@ -1212,6 +1252,19 @@ def synthesize_new_sessions(
                 _sync_project_sessions(sources_out.parent, project)
         if clusters:
             print(f"  coalesced: {clusters} cluster page(s)")
+
+    if coalesce_only:
+        # Deterministic cleanup only: no backend probe, no per-session
+        # pages. The Stop-hook can call this without an LLM server.
+        summary["backend"] = "none"
+        if not dry_run:
+            _save_state(state, state_file)
+            if summary.get("coalesced", 0) > 0:
+                try:
+                    _rebuild_index(sources_out.parent)
+                except (OSError, ValueError, RuntimeError) as e:
+                    summary["errors"].append(f"index rebuild: {e}")
+        return summary
 
     if backend is None:
         backend = DummySynthesizer()

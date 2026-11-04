@@ -124,6 +124,95 @@ def cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
+def _maybe_export_zcode(args: argparse.Namespace) -> None:
+    """Refresh the ZCode JSONL corpus before a sync, when applicable.
+
+    ZCode sessions live in a live SQLite database; the llmwiki adapter
+    reads a flat JSONL export. Without this step `llmwiki sync` (and the
+    MCP ``wiki_sync`` tool, which shells out to it) would silently miss
+    new sessions. The export is incremental, so an unchanged store costs
+    one read-only scan.
+
+    Failures are warnings, not sync failures: the existing JSONL corpus
+    is still usable.
+    """
+    if not getattr(args, "zcode_export", False):
+        return
+
+    try:
+        config = _load_run_config()
+    except Exception:
+        config = {}
+    zcode_cfg = config.get("zcode") if isinstance(config, dict) else None
+
+    adapters = getattr(args, "adapter", None)
+    if adapters:
+        from llmwiki.adapters import discover_adapters, resolve_adapter_name
+
+        discover_adapters()
+        selected = {resolve_adapter_name(name) for name in adapters}
+        if "zcode" not in selected:
+            return
+    elif isinstance(zcode_cfg, dict) and zcode_cfg.get("enabled") is False:
+        # Auto-selection follows the config toggle. An explicit
+        # `--adapter zcode` overrides it, matching convert_all().
+        return
+
+    project_roots = None
+    if isinstance(zcode_cfg, dict):
+        configured_roots = zcode_cfg.get("project_roots")
+        if isinstance(configured_roots, list):
+            project_roots = configured_roots
+
+    from llmwiki.zcode.export import (
+        DEFAULT_DB,
+        DEFAULT_OUT_DIR,
+        parse_since,
+        run_export,
+    )
+
+    db = Path(getattr(args, "zcode_db", None) or DEFAULT_DB).expanduser()
+    if not db.is_file():
+        return
+    out_dir = Path(getattr(args, "zcode_out_dir", None) or DEFAULT_OUT_DIR).expanduser()
+
+    try:
+        since_ms = parse_since(getattr(args, "since", None))
+    except ValueError as exc:
+        print(f"  warning: zcode export skipped: {exc}", file=sys.stderr)
+        return
+
+    print(f"  zcode export: {db} -> {out_dir}")
+    try:
+        stats = run_export(
+            db,
+            out_dir,
+            since=since_ms,
+            project=getattr(args, "project", None),
+            include_subagents=False,
+            dry_run=bool(getattr(args, "dry_run", False)),
+            project_roots=project_roots,
+        )
+    except Exception as exc:  # noqa: BLE001 - sync must survive a bad DB
+        print(f"  warning: zcode export failed: {exc}", file=sys.stderr)
+        return
+
+    print(
+        (
+            f"  zcode export (dry-run): {stats.get('exported', 0)} would change, "
+            f"{stats.get('unchanged', 0)} unchanged"
+            if getattr(args, "dry_run", False)
+            else f"  zcode export: {stats.get('exported', 0)} exported, "
+            f"{stats.get('unchanged', 0)} unchanged"
+        )
+    )
+    if stats.get("errors"):
+        print(
+            f"  warning: zcode export finished with {stats['errors']} error(s)",
+            file=sys.stderr,
+        )
+
+
 def cmd_sync(args: argparse.Namespace) -> int:
     """Convert .jsonl sessions to markdown using the enabled adapters."""
     # G-03 (#289): `sync --status` short-circuits into the status reporter.
@@ -159,6 +248,9 @@ def cmd_sync(args: argparse.Namespace) -> int:
         out_dir = vault.root / "raw" / "sessions"
         state_file = vault.root / ".llmwiki-state.json"
 
+    dry_run = bool(getattr(args, "dry_run", False))
+    _maybe_export_zcode(args)
+
     rc = convert_all(
         adapters=args.adapter,
         out_dir=out_dir,
@@ -167,6 +259,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
         project=args.project,
         include_current=args.include_current,
         force=args.force,
+        dry_run=dry_run,
     )
 
     # v1.0 (#157): auto-build and auto-lint after sync.
@@ -174,7 +267,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
     # #470: when --vault was given, point the auto-build at the vault's
     # site/ tree too — otherwise the build silently writes to the
     # repo's site/ and the user's vault stays empty.
-    if rc == 0:
+    if rc == 0 and not dry_run:
         schedule = _load_schedule_config()
         site_root = (vault.root / "site") if vault_path else (REPO_ROOT / "site")
         if args.auto_build and _should_run_after_sync(schedule.get("build", "on-sync")):
@@ -242,7 +335,6 @@ def cmd_adapters(args: argparse.Namespace) -> int:
 
     G-02 (#288): ``--wide`` disables the description cap.
     """
-    import json as _json
     import shutil as _shutil
 
     discover_adapters()
@@ -250,14 +342,9 @@ def cmd_adapters(args: argparse.Namespace) -> int:
         print("No adapters registered.")
         return 0
 
-    # Load user config to show enable/disable state
-    config_path = REPO_ROOT / "examples" / "sessions_config.json"
-    config: dict = {}
-    if config_path.is_file():
-        try:
-            config = _json.loads(config_path.read_text(encoding="utf-8"))
-        except (ValueError, OSError):
-            pass
+    # Load the same layered config `sync` uses, so a local override
+    # that disables an adapter is reflected in this table.
+    config = _load_run_config()
 
     # Description column width: 40 by default, full line with --wide,
     # or auto-fit to terminal (minus the four fixed columns + gutters).
@@ -302,6 +389,88 @@ def cmd_adapters(args: argparse.Namespace) -> int:
     if not wide:
         print()
         print("Pass --wide to see untruncated descriptions.")
+    return 0
+
+
+def cmd_zcode_export(args: argparse.Namespace) -> int:
+    """Export ZCode's SQLite store to JSONL for the zcode adapter."""
+    if getattr(args, "zcode_command", None) != "export":
+        print("usage: llmwiki zcode export [options]", file=sys.stderr)
+        return 2
+
+    from llmwiki.zcode import export as zcode_export
+
+    argv: list[str] = [
+        "--db",
+        str(args.db),
+        "--out-dir",
+        str(args.out_dir),
+    ]
+    if getattr(args, "state_file", None):
+        argv.extend(["--state-file", str(args.state_file)])
+    if getattr(args, "since", None):
+        argv.extend(["--since", str(args.since)])
+    if getattr(args, "project", None):
+        argv.extend(["--project", str(args.project)])
+    for root in getattr(args, "project_roots", None) or []:
+        argv.extend(["--project-root", str(root)])
+    if getattr(args, "include_subagents", False):
+        argv.append("--include-subagents")
+    if getattr(args, "keep_stale", False):
+        argv.append("--keep-stale")
+    if getattr(args, "strict", False):
+        argv.append("--strict")
+    if getattr(args, "dry_run", False):
+        argv.append("--dry-run")
+    return zcode_export.main(argv)
+
+
+def cmd_zcode_autosync(args: argparse.Namespace) -> int:
+    """Run one portable autosync cycle (export → convert → optional build)."""
+    if getattr(args, "zcode_command", None) != "autosync":
+        print("usage: llmwiki zcode autosync [options]", file=sys.stderr)
+        return 2
+
+    from llmwiki.zcode.autosync import run_autosync
+
+    return run_autosync(
+        db_path=args.db,
+        out_dir=args.out_dir,
+        project=args.project,
+        build=bool(getattr(args, "build", False)),
+        coalesce=bool(getattr(args, "coalesce", False)),
+        lock_timeout=float(getattr(args, "lock_timeout", 600)),
+        log_path=getattr(args, "log", None),
+        quiet=bool(getattr(args, "quiet", False)),
+    )
+
+
+def cmd_zcode_install(args: argparse.Namespace) -> int:
+    """Install the ZCode Stop-hook and a native scheduler entry."""
+    if getattr(args, "zcode_command", None) != "install":
+        print("usage: llmwiki zcode install [options]", file=sys.stderr)
+        return 2
+
+    from llmwiki.zcode.install import install_all
+
+    try:
+        messages = install_all(
+            scheduler=args.scheduler,
+            python_exe=getattr(args, "python_exe", None),
+            repo_root=getattr(args, "repo_root", None) or REPO_ROOT,
+            at=args.at,
+            build=not bool(getattr(args, "no_build", False)),
+            coalesce=bool(getattr(args, "coalesce", False)),
+            hook=not bool(getattr(args, "no_hook", False)),
+            dry_run=bool(getattr(args, "dry_run", False)),
+            force=bool(getattr(args, "force", False)),
+        )
+    except (OSError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    for message in messages:
+        print(message)
     return 0
 
 
@@ -469,39 +638,16 @@ def cmd_lint(args: argparse.Namespace) -> int:
     return 0
 
 
-def _deep_merge(base: dict, override: dict) -> None:
-    """Merge ``override`` into ``base``; nested dicts merge, other values win."""
-    for key, value in override.items():
-        if isinstance(value, dict) and isinstance(base.get(key), dict):
-            _deep_merge(base[key], value)
-        else:
-            base[key] = value
-
-
 def _load_run_config() -> dict:
-    """Load the tracked example, then gitignored per-checkout overrides.
+    """Load the shared example plus gitignored per-checkout overrides.
 
     Order: ``examples/sessions_config.json`` → ``config.json`` →
-    ``config.local.json``. Machine settings (backend URLs, API keys)
-    belong in an override, not in the shared example.
+    ``config.local.json``. Machine settings (backend URLs, API keys,
+    redaction patterns) belong in an override, not in the shared example.
     """
-    import json as _json
+    from llmwiki.config import resolve_config
 
-    merged: dict = {}
-    for path in (
-        REPO_ROOT / "examples" / "sessions_config.json",
-        REPO_ROOT / "config.json",
-        REPO_ROOT / "config.local.json",
-    ):
-        if not path.is_file():
-            continue
-        try:
-            data = _json.loads(path.read_text(encoding="utf-8"))
-        except (_json.JSONDecodeError, OSError):
-            continue
-        if isinstance(data, dict):
-            _deep_merge(merged, data)
-    return merged
+    return resolve_config(REPO_ROOT)
 
 
 def _config_int(value: Any, default: int, *, minimum: int = 1) -> int:
@@ -547,14 +693,27 @@ def cmd_synthesize(args: argparse.Namespace) -> int:
     if args.complete:
         return _synthesize_complete(args)
 
-    backend = resolve_backend(config)
-    print(f"Backend: {backend.name}")
+    coalesce_only = bool(getattr(args, "coalesce_only", False))
+    if coalesce_only:
+        backend = None
+        print("Backend: none (coalesce-only)")
+    else:
+        backend = resolve_backend(config)
+        print(f"Backend: {backend.name}")
     synth_cfg = config.get("synthesis", {}) or {}
     max_workers = _config_int(synth_cfg.get("max_concurrency"), 1)
     coalesce_low_signal = _config_bool(synth_cfg.get("coalesce_low_signal"), False)
+    if coalesce_only:
+        coalesce_low_signal = True
     coalesce_min_group = _config_int(synth_cfg.get("coalesce_min_group"), 3)
     coalesce_window = str(synth_cfg.get("coalesce_window", "all") or "all")
     strip_links = _config_bool(synth_cfg.get("strip_unresolved_wikilinks"), True)
+    raw_lock_patterns = synth_cfg.get("lock_skip_patterns")
+    lock_skip_patterns = (
+        [str(pattern) for pattern in raw_lock_patterns]
+        if isinstance(raw_lock_patterns, list)
+        else None
+    )
     if max_workers > 1:
         print(f"Concurrency: {max_workers}")
     if coalesce_low_signal:
@@ -596,6 +755,8 @@ def cmd_synthesize(args: argparse.Namespace) -> int:
         coalesce_low_signal=coalesce_low_signal,
         coalesce_min_group=coalesce_min_group,
         coalesce_window=coalesce_window,
+        lock_skip_patterns=lock_skip_patterns,
+        coalesce_only=coalesce_only,
         strip_unresolved_wikilinks=strip_links,
     )
     print(
@@ -778,6 +939,20 @@ def build_parser() -> argparse.ArgumentParser:
     sync.add_argument("--include-current", action="store_true", help="Don't skip live sessions (<60 min)")
     sync.add_argument("--force", action="store_true", help="Ignore state file, reconvert everything")
     sync.add_argument(
+        "--dry-run", action="store_true",
+        help="Preview conversions without writing raw/ or refreshing the ZCode export",
+    )
+    sync.add_argument(
+        "--zcode-export", action=argparse.BooleanOptionalAction, default=True,
+        help="Refresh the ZCode JSONL corpus before converting "
+             "(default: on when the ZCode database exists; pass "
+             "--no-zcode-export to skip)",
+    )
+    sync.add_argument(
+        "--zcode-db", type=Path, default=None,
+        help="Path to ZCode db.sqlite (default: ~/.zcode/cli/db/db.sqlite)",
+    )
+    sync.add_argument(
         "--auto-build", action=argparse.BooleanOptionalAction, default=True,
         help="After sync, rebuild the site when sessions_config.json's "
              "schedule.build is 'on-sync' (default: on; pass --no-auto-build to skip)",
@@ -844,6 +1019,159 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show untruncated adapter descriptions (G-02 · #288).",
     )
     ads.set_defaults(func=cmd_adapters)
+
+    # doctor — install diagnostics for a fresh machine
+    from llmwiki.doctor import cmd_doctor as _cmd_doctor
+
+    doctor = sub.add_parser(
+        "doctor",
+        help="Check Python, dependencies, config, and ZCode paths on this machine",
+    )
+    doctor.set_defaults(func=_cmd_doctor)
+
+    # audit — pre-publish privacy check
+    from llmwiki.audit import cmd_audit as _cmd_audit
+
+    audit = sub.add_parser(
+        "audit",
+        help="Scan raw/, wiki/, and site/ for usernames and secrets",
+    )
+    audit.add_argument(
+        "--path", action="append", type=Path, default=None,
+        help="file or directory to scan (repeatable; default: raw/ wiki/ site/)",
+    )
+    audit.add_argument(
+        "--username", default=None,
+        help="username to search for (default: redaction.real_username or $USER)",
+    )
+    audit.add_argument("--json", action="store_true", help="emit a JSON report")
+    audit.add_argument(
+        "--fail-on-findings", action="store_true",
+        help="exit 1 when anything is found (for a publish gate)",
+    )
+    audit.set_defaults(func=_cmd_audit)
+
+    # zcode (ZCode session-store integration)
+    zcode = sub.add_parser("zcode", help="ZCode session-store export")
+    zcode_sub = zcode.add_subparsers(dest="zcode_command", metavar="COMMAND")
+    zcode_export = zcode_sub.add_parser(
+        "export", help="Export ~/.zcode/cli/db/db.sqlite to JSONL"
+    )
+    from llmwiki.zcode.export import DEFAULT_DB as _ZCODE_DB
+    from llmwiki.zcode.export import DEFAULT_OUT_DIR as _ZCODE_OUT
+
+    zcode_export.add_argument(
+        "--db", type=Path, default=_ZCODE_DB, help="path to ZCode db.sqlite"
+    )
+    zcode_export.add_argument(
+        "--out-dir", type=Path, default=_ZCODE_OUT, help="JSONL output directory"
+    )
+    zcode_export.add_argument(
+        "--state-file", type=Path, default=None, help="incremental state file"
+    )
+    zcode_export.add_argument(
+        "--since", default=None, help="only sessions updated on/after YYYY-MM-DD"
+    )
+    zcode_export.add_argument(
+        "--project", default=None,
+        help="case-insensitive project path or slug substring",
+    )
+    zcode_export.add_argument(
+        "--project-root",
+        dest="project_roots",
+        action="append",
+        type=Path,
+        default=None,
+        help="treat this directory as a project root (repeatable)",
+    )
+    zcode_export.add_argument(
+        "--include-subagents", action="store_true",
+        help="include subagent_child sessions",
+    )
+    zcode_export.add_argument(
+        "--keep-stale", action="store_true",
+        help="do not remove JSONL for sessions deleted from the database",
+    )
+    zcode_export.add_argument(
+        "--strict", action="store_true",
+        help="exit 1 when any session fails, even if others exported",
+    )
+    zcode_export.add_argument(
+        "--dry-run", action="store_true",
+        help="show counters without writing files",
+    )
+    zcode_export.set_defaults(func=cmd_zcode_export)
+
+    autosync = zcode_sub.add_parser(
+        "autosync",
+        help="Export, convert, and optionally build (portable scheduler entry point)",
+    )
+    autosync.add_argument(
+        "--db", type=Path, default=_ZCODE_DB, help="path to ZCode db.sqlite"
+    )
+    autosync.add_argument(
+        "--out-dir", type=Path, default=_ZCODE_OUT, help="JSONL output directory"
+    )
+    autosync.add_argument(
+        "--project", default=None,
+        help="case-insensitive project path or slug substring",
+    )
+    autosync.add_argument(
+        "--build", action="store_true",
+        help="rebuild site/ after converting",
+    )
+    autosync.add_argument(
+        "--coalesce", action="store_true",
+        help="run deterministic low-signal coalescing after sync",
+    )
+    autosync.add_argument(
+        "--lock-timeout", type=float, default=600,
+        help="seconds to wait for another autosync (default: 600)",
+    )
+    autosync.add_argument(
+        "--log", type=Path, default=None,
+        help="log file (default: ~/.llmwiki/zcode/autosync.log)",
+    )
+    autosync.add_argument(
+        "--quiet", action="store_true",
+        help="write only to the log file",
+    )
+    autosync.set_defaults(func=cmd_zcode_autosync)
+
+    install = zcode_sub.add_parser(
+        "install",
+        help="Install the Stop-hook and a native autosync scheduler",
+    )
+    install.add_argument(
+        "--scheduler",
+        choices=["auto", "systemd", "launchd", "windows", "none"],
+        default="auto",
+        help="Native scheduler (default: auto-detect)",
+    )
+    install.add_argument("--at", default="03:30", help="daily start time HH:MM")
+    install.add_argument(
+        "--python",
+        dest="python_exe",
+        default=None,
+        help="Python interpreter for the scheduled command (default: current)",
+    )
+    install.add_argument(
+        "--repo-root",
+        type=Path,
+        default=None,
+        help="llmwiki checkout used as WorkingDirectory (default: this repo)",
+    )
+    install.add_argument("--no-build", action="store_true", help="do not rebuild site/")
+    install.add_argument(
+        "--coalesce", action="store_true",
+        help="also run deterministic low-signal coalescing",
+    )
+    install.add_argument("--no-hook", action="store_true", help="skip the ZCode Stop hook")
+    install.add_argument("--dry-run", action="store_true", help="print changes only")
+    install.add_argument(
+        "--force", action="store_true", help="replace an existing autosync hook"
+    )
+    install.set_defaults(func=cmd_zcode_install)
 
     # graph
     graph = sub.add_parser("graph", help="Build the knowledge graph (graph/graph.json + graph.html)")
@@ -942,6 +1270,10 @@ def build_parser() -> argparse.ArgumentParser:
     syn_mode.add_argument(
         "--complete", metavar="UUID", default=None,
         help="Complete a pending synthesis: read body from --body or stdin, rewrite --page in place (#316)",
+    )
+    syn_mode.add_argument(
+        "--coalesce-only", action="store_true",
+        help="Run deterministic low-signal coalescing only; no LLM backend needed",
     )
     # --force is orthogonal (modifies the default re-synthesize-all flow)
     # and stays outside the exclusion group so callers can pass

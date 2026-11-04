@@ -432,3 +432,127 @@ def test_main_dry_run_returns_zero(tmp_path: Path, capsys: pytest.CaptureFixture
     assert "dry-run" in captured.out.lower()
     assert "exported" in captured.out.lower()
     assert not out.exists()
+
+
+def test_export_logic_is_available_as_package_module(tmp_path: Path) -> None:
+    """The exporter must ship inside the package, not only in scripts/."""
+    from llmwiki.zcode import export as packaged
+
+    assert (
+        packaged.project_slug_for_directory(
+            "/home/test/Projects/demo_project", home=Path("/home/test")
+        )
+        == "demo_project"
+    )
+
+
+def test_project_slug_uses_git_root_for_nested_directory(tmp_path: Path) -> None:
+    import shutil
+    import subprocess
+
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+    repo = tmp_path / "myrepo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    nested = repo / "pkg" / "sub"
+    nested.mkdir(parents=True)
+
+    exporter = load_exporter()
+    slug = exporter.project_slug_for_directory(
+        str(nested), home=tmp_path / "home"
+    )
+
+    assert slug == "myrepo"
+
+
+def test_project_slug_uses_configured_project_root(tmp_path: Path) -> None:
+    nested = tmp_path / "dev" / "foo" / "sub"
+    nested.mkdir(parents=True)
+
+    exporter = load_exporter()
+    slug = exporter.project_slug_for_directory(
+        str(nested),
+        home=tmp_path / "home",
+        project_roots=[tmp_path / "dev"],
+    )
+
+    assert slug == "foo"
+
+
+def test_zcode_export_parser_accepts_project_root(tmp_path: Path) -> None:
+    from llmwiki.cli import build_parser
+
+    args = build_parser().parse_args(
+        ["zcode", "export", "--project-root", str(tmp_path)]
+    )
+
+    assert args.project_roots == [tmp_path]
+
+
+def test_export_prunes_sessions_deleted_from_database(tmp_path: Path) -> None:
+    exporter = load_exporter()
+    db = make_db(tmp_path)
+    out = tmp_path / "out"
+
+    first = exporter.run_export(db, out)
+    assert first["written"] == 2
+    assert list(out.rglob("*sess-2*"))
+
+    con = sqlite3.connect(db)
+    con.execute("delete from part where session_id = 'sess-2'")
+    con.execute("delete from message where session_id = 'sess-2'")
+    con.execute("delete from session where id = 'sess-2'")
+    con.commit()
+    con.close()
+
+    second = exporter.run_export(db, out)
+
+    assert second["stale"] == 1
+    assert not list(out.rglob("*sess-2*"))
+    state = json.loads((out / ".export-state.json").read_text(encoding="utf-8"))
+    assert "sess-2" not in state["sessions"]
+
+
+def test_export_does_not_prune_when_project_filter_is_used(tmp_path: Path) -> None:
+    exporter = load_exporter()
+    db = make_db(tmp_path)
+    out = tmp_path / "out"
+
+    exporter.run_export(db, out)
+    stale_file = next(out.rglob("*sess-2*"))
+    assert stale_file.exists()
+
+    stats = exporter.run_export(db, out, project="demo")
+
+    assert stats["stale"] == 0
+    assert stale_file.exists()
+
+
+def test_cli_zcode_export_dry_run(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from llmwiki.cli import main
+
+    db = make_db(tmp_path)
+    out = tmp_path / "out"
+
+    rc = main(
+        [
+            "zcode",
+            "export",
+            "--db",
+            str(db),
+            "--out-dir",
+            str(out),
+            "--dry-run",
+            "--project",
+            "demo",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "dry-run" in captured.out.lower()
+    assert "exported" in captured.out.lower()
+    assert not out.exists()

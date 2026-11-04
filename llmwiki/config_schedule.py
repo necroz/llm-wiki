@@ -1,30 +1,27 @@
 """Session-config helpers extracted from cli.py (#691 / #arch-h8).
 
 Schedule and synthesis settings from ``examples/sessions_config.json``
-(the canonical shipped config). ``cli.py`` re-exports schedule helpers
+(the canonical shipped config) plus the gitignored ``config.json`` /
+``config.local.json`` overrides. ``cli.py`` re-exports schedule helpers
 under the original underscored names for back-compat.
 """
 
 from __future__ import annotations
 
-import json as _json
 from pathlib import Path
 from typing import Any
 
 from llmwiki import REPO_ROOT
+from llmwiki.config import read_config_file, resolve_config
 
 _SESSIONS_CONFIG = REPO_ROOT / "examples" / "sessions_config.json"
 
 
 def _load_sessions_config(config_path: Path | None = None) -> dict[str, Any]:
-    path = config_path or _SESSIONS_CONFIG
-    if not path.is_file():
-        return {}
-    try:
-        data = _json.loads(path.read_text(encoding="utf-8"))
-    except (ValueError, OSError):
-        return {}
-    return data if isinstance(data, dict) else {}
+    """Return one config file, or the full layered config when no path is given."""
+    if config_path is not None:
+        return read_config_file(config_path)
+    return resolve_config()
 
 
 def load_schedule_config() -> dict[str, str]:

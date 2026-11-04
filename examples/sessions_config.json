@@ -99,6 +99,11 @@
     "coalesce_low_signal": false,
     "coalesce_min_group": 3,
     "coalesce_window": "all",
+    "lock_skip_patterns": [
+      "run.lock существует",
+      "завершаюсь сразу",
+      "запуск пропущен"
+    ],
     "strip_unresolved_wikilinks": true
   }
 }

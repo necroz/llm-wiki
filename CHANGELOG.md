@@ -16,14 +16,24 @@ Versions below 1.0 are pre-production — API and file formats may change.
 - **`synthesis.strip_unresolved_wikilinks` config key** (docs/tasks/08) — when set to `false`, `llmwiki synthesize` keeps `[[wikilinks]]` to not-yet-written pages instead of degrading them to plain text, so pages created later still receive their inbound links; default `true` preserves the old cleanup behavior.
 - **Low-signal session coalescing** — `synthesis.coalesce_low_signal`, `coalesce_min_group`, and `coalesce_window` replace groups of no-op sessions with one deterministic `*-noop-sessions.md` page and a `_clusters.json` manifest. Later runs reconcile stale cluster pages and re-queue their members.
 - **`synthesis.max_concurrency`** — run synthesis workers in parallel when the backend accepts concurrent requests.
-- **Machine-local config overrides** — `llmwiki synthesize` merges gitignored `config.json` and `config.local.json` over `examples/sessions_config.json`, so backend URLs and API keys stay out of the shared example.
+- **`llmwiki zcode export`** — the ZCode SQLite → JSONL exporter now ships inside the package (`llmwiki/zcode/export.py`) and is exposed as a CLI subcommand. `llmwiki sync` refreshes the JSONL corpus automatically when `~/.zcode/cli/db/db.sqlite` exists; `--no-zcode-export` skips it. The old `scripts/zcode_export.py` path remains a compatibility wrapper.
+- **`llmwiki doctor`** — reports Python version, `markdown`, virtualenv, config files, and ZCode database/export paths. Exits `1` only for missing Python/markdown.
+- **`llmwiki audit`** — read-only scan of `raw/`, `wiki/`, and `site/` for the local username, built-in token patterns, and user redaction patterns. `--json` for machines, `--fail-on-findings` as a publish gate.
+- **`llmwiki zcode autosync`** — portable export → convert → optional build entry point. Uses `llmwiki/lock.py` (POSIX `flock`, Windows `msvcrt`) instead of a bash `flock`; a busy lock logs `skip` and exits 0.
+- **`llmwiki zcode install`** — idempotent ZCode Stop-hook plus one native scheduler: systemd user timer, launchd agent, or a Windows `.cmd` + `schtasks` command. `--dry-run` prints changes; `--coalesce` enables deterministic cleanup in the scheduled run.
+- **Configurable project roots** — `zcode.project_roots` / `--project-root`, plus git-root detection (`git rev-parse --show-toplevel`), so projects outside `~/Projects` (for example `~/dev`, `~/src`, `D:\work`) no longer split into subdirectory slugs.
+- **Exporter reconciliation** — a full `llmwiki zcode export` removes JSONL for sessions deleted from the database, prints `schema: N`, and has `--keep-stale` / `--strict`. `--project` / `--since` runs never prune.
+- **`synthesis.lock_skip_patterns`** — lock-skip phrases are configurable; `[]` disables that rule. The old Russian worker phrases remain the default.
+- **`llmwiki synthesize --coalesce-only`** — runs deterministic low-signal coalescing without probing or calling an LLM backend. `zcode autosync --coalesce` uses the same path.
+- **Layered config for every command** — `llmwiki sync`, `build`, `adapters`, `sync --status`, freshness badges, and `synthesize` all merge `examples/sessions_config.json` → `config.json` → `config.local.json`, so machine-local redaction and adapter settings are no longer ignored by the converter.
 
 ### Changed
 
+- **`setup.sh` / `setup.bat` create a checkout-local `.venv`** — the installer no longer relies on system site-packages or `pip install --user` (blocked by PEP 668 on current Debian/Ubuntu and Homebrew Python). `sync.sh`, `build.sh`, `serve.sh`, and the `.bat` equivalents prefer `.venv` and fall back to system Python. The shell wrappers are executable in git again.
+- **`scripts/zcode_sync_hook.sh` is now a thin wrapper** — it calls `llmwiki zcode autosync` and no longer uses `flock` or a bash lock. Existing hook entries keep working; new installs should use `llmwiki zcode install`.
 - **README quick-start + `/wiki-all`** (#383) — document that `sync` alone only fills `raw/`; semantic wiki pages require `synthesize` or `all --with-synth`.
 - **Generated wiki pages and synth state are no longer tracked** — `wiki/index.md`, `wiki/overview.md`, and `.llmwiki-synth-state.json` were already listed in `.gitignore`; they are now removed from the index, so a fresh clone and CI never see local source links or machine state.
 - **`tests/test_synth_pipeline.py` synth-state isolation** — autouse fixture points `llmwiki.synth.pipeline.STATE_FILE` at `tmp_path`, so running the tests no longer overwrites the real `.llmwiki-synth-state.json` (which forced a full-corpus re-synthesis on the next run).
-- **README quick-start + `/wiki-all`** (#383) — document that `sync` alone only fills `raw/`; semantic wiki pages require `synthesize` or `all --with-synth`.
 - **`_sync_project_sessions` output hardening** — summary labels flatten nested wikilinks (no broken `[[stem|... [[X]] ...]]` links), understand an existing `## Sessions (N)` heading, cut long summaries at a word boundary, and skip the write when nothing changed.
 - **Generated `wiki/index.md`** — `## Sources` carries the page count and duplicate `## Sources` sections collapse into one, so reruns converge instead of appending.
 

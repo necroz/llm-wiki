@@ -8,7 +8,7 @@ docs_shell: true
 
 **Time:** 5 minutes
 **You'll need:** Python 3.9+, `git`, and at least one AI-coding agent already installed with session history on disk.
-**Result:** A working `llmwiki` CLI on your PATH (or runnable via `python3 -m llmwiki`).
+**Result:** A working `llmwiki` CLI in `.venv` (run `.venv/bin/llmwiki` or activate the venv), plus wrapper scripts that work without activation.
 
 ---
 
@@ -55,16 +55,23 @@ The setup script is idempotent. Running it twice is safe.
 
 It will:
 
+- Create a checkout-local `.venv` (so the system Python and PEP 668 do not matter)
+- Install the package into that venv (editable, so source edits apply)
 - Create `raw/`, `wiki/`, `site/` directories if they don't exist
 - Seed `wiki/index.md`, `wiki/overview.md`, `wiki/log.md`, `wiki/CRITICAL_FACTS.md`
-- Install the `markdown` pip package (only runtime dep; everything else is stdlib)
-- Verify the CLI launches: `python3 -m llmwiki --version`
+- Run `llmwiki doctor` to show which adapters and ZCode paths are visible
 
-Expected output (version string matches the latest tagged release):
+Expected output ends with:
 
 ```
-llmwiki <version>
+================================================================
+  Setup complete.
+================================================================
 ```
+
+The wrapper scripts (`sync.sh`, `build.sh`, `serve.sh`) use
+`.venv/bin/python` automatically; you do not need to activate the venv
+in a new shell.
 
 ## Step 4 — (Optional) Install via PyPI instead
 
@@ -98,12 +105,13 @@ See [deploy/docker.md](../deploy/docker.md) for the full Compose setup.
 ## Verify
 
 ```bash
-python3 -m llmwiki --version           # → llmwiki <version>
-python3 -m llmwiki adapters            # lists every agent adapter and whether it's configured
+.venv/bin/python -m llmwiki --version  # → llmwiki <version>
+.venv/bin/python -m llmwiki adapters   # lists every adapter and whether it's configured
+.venv/bin/python -m llmwiki doctor     # Python, markdown, venv, config, ZCode paths
 ```
 
 The `adapters` output tells you which agents have session stores on this
-machine — your first sync pulls from every one marked `configured ✓`.
+machine — your first sync pulls from every one marked `active`.
 
 ---
 
@@ -111,9 +119,11 @@ machine — your first sync pulls from every one marked `configured ✓`.
 
 **`command not found: python3`** — install Python from python.org and re-open your terminal.
 
-**`setup.sh: permission denied`** — `chmod +x setup.sh` once, then re-run.
+**`setup.sh: permission denied`** — the shell scripts are executable in git; if your checkout lost the bit, run `chmod +x setup.sh` once.
 
-**`ModuleNotFoundError: No module named 'markdown'`** — `pip install markdown` and re-run.
+**`ModuleNotFoundError: No module named 'markdown'`** — run `./setup.sh` again, or `.venv/bin/python -m pip install -e .`.
+
+**`externally-managed-environment` (PEP 668)** — do not use `pip install --user`; `./setup.sh` creates a local `.venv` and installs there.
 
 **`ImportError` on Python 3.8 or older** — llmwiki requires ≥ 3.9. Upgrade Python; on macOS use `brew install python@3.12`.
 

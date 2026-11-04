@@ -72,6 +72,8 @@ python3 -m llmwiki sync --no-auto-build --no-auto-lint
 python3 -m llmwiki sync --vault "~/Documents/Obsidian Vault"
 python3 -m llmwiki sync --vault ~/my-vault --allow-overwrite
 python3 -m llmwiki sync --force
+python3 -m llmwiki sync --dry-run
+python3 -m llmwiki sync --adapter zcode --no-zcode-export
 ```
 
 ### Flags
@@ -83,6 +85,9 @@ python3 -m llmwiki sync --force
 | `--project SUBSTRING` | Filter by project-slug substring. |
 | `--include-current` | Include sessions < 60 min old (default skips live ones). |
 | `--force` | Ignore the mtime state file, reconvert everything. |
+| `--dry-run` | Preview conversions; does not write `raw/`, refresh the ZCode export, or auto-build. |
+| `--zcode-export` / `--no-zcode-export` | Refresh ZCode's JSONL corpus before converting (default: on when the database exists). |
+| `--zcode-db PATH` | ZCode database path. Default: `~/.zcode/cli/db/db.sqlite`. |
 | `--auto-build` / `--no-auto-build` | Rebuild `site/` after sync (default: on). |
 | `--auto-lint` / `--no-auto-lint` | Run `lint` after sync (default: on). |
 | `--vault PATH` | Vault-overlay mode — write new pages inside the given Obsidian / Logseq vault instead of `wiki/`. See [`guides/existing-vault.md`](../guides/existing-vault.md). |
@@ -193,6 +198,135 @@ Registered adapters:
 
 Columns: **default** (runs when you don't pass `--adapter`), **configured**
 (adapter sees a valid session store on this machine).
+
+---
+
+## `zcode` — export the ZCode session store
+
+ZCode keeps sessions in a live SQLite database, not in per-session
+JSONL files. This command writes an incremental, Claude-style JSONL
+corpus that the `zcode` adapter can convert. `llmwiki sync` runs the
+same export automatically when the database exists and the `zcode`
+adapter is selected.
+
+```bash
+python3 -m llmwiki zcode export
+python3 -m llmwiki zcode export --project demo_project --dry-run
+python3 -m llmwiki zcode export --since 2026-09-01
+python3 -m llmwiki zcode export --project-root ~/dev
+python3 -m llmwiki zcode export --include-subagents
+```
+
+### `zcode export` flags
+
+| Flag | What |
+|---|---|
+| `--db PATH` | ZCode database. Default: `~/.zcode/cli/db/db.sqlite`. |
+| `--out-dir DIR` | JSONL output. Default: `~/.llmwiki/zcode/`. |
+| `--state-file PATH` | Incremental state. Default: `<out-dir>/.export-state.json`. |
+| `--since YYYY-MM-DD` | Only sessions updated on or after this date. |
+| `--project SUBSTR` | Case-insensitive project path or slug filter. |
+| `--project-root DIR` | Treat this directory as a project root (repeatable). |
+| `--include-subagents` | Include `subagent_child` sessions. Off by default. |
+| `--keep-stale` | Keep JSONL for sessions deleted from the database. |
+| `--strict` | Exit 1 if any session fails, even when others exported. |
+| `--dry-run` | Print counters without writing files. |
+
+The export is read-only against ZCode's database and idempotent:
+`session.time_updated` is the incremental key. A full export also
+removes JSONL for sessions that disappeared from the database.
+
+### `zcode autosync`
+
+Portable scheduler entry point. It uses an OS-level lock instead of
+`flock`, so it works on Linux, macOS, and Windows.
+
+```bash
+python3 -m llmwiki zcode autosync
+python3 -m llmwiki zcode autosync --build
+python3 -m llmwiki zcode autosync --coalesce --build
+```
+
+| Flag | What |
+|---|---|
+| `--project SUBSTR` | Export/convert one project substring. |
+| `--build` | Rebuild `site/` after conversion. |
+| `--coalesce` | Run deterministic low-signal coalescing (no LLM). |
+| `--lock-timeout SECONDS` | Wait for another autosync. Default: 600. |
+| `--log PATH` | Log file. Default: `~/.llmwiki/zcode/autosync.log`. |
+| `--quiet` | Write only to the log. |
+
+### `zcode install`
+
+Installs the ZCode `Stop` hook and one native scheduler entry:
+systemd user timer (Linux), launchd agent (macOS), or Task Scheduler
+(Windows). The hook is idempotent.
+
+```bash
+python3 -m llmwiki zcode install --dry-run
+python3 -m llmwiki zcode install --scheduler systemd --at 03:30
+python3 -m llmwiki zcode install --scheduler launchd --coalesce
+python3 -m llmwiki zcode install --scheduler windows --no-build
+```
+
+| Flag | What |
+|---|---|
+| `--scheduler {auto,systemd,launchd,windows,none}` | Default: auto-detect. |
+| `--at HH:MM` | Daily start time. Default: `03:30`. |
+| `--python PATH` | Interpreter for the scheduled command. Default: current. |
+| `--repo-root PATH` | Checkout used as `WorkingDirectory`. |
+| `--build` / `--no-build` | Rebuild `site/` after sync (default: on). |
+| `--coalesce` | Also run deterministic coalescing. |
+| `--no-hook` | Skip the ZCode Stop hook. |
+| `--dry-run` | Print changes only. |
+| `--force` | Replace an existing autosync hook. |
+
+---
+
+## `doctor` — check the local install
+
+Prints Python, `markdown`, virtualenv, config files, and ZCode database /
+export paths. Exits `1` only when a required check fails.
+
+```bash
+python3 -m llmwiki doctor
+```
+
+Typical output:
+
+```
+llmwiki doctor 1.3.82
+  [ok  ] python       3.12.4
+  [ok  ] markdown     installed
+  [ok  ] venv         active
+  [ok  ] config       examples/sessions_config.json, config.local.json
+  [ok  ] zcode_db     /home/me/.zcode/cli/db/db.sqlite
+  [ok  ] zcode_export 842 session file(s) in /home/me/.llmwiki/zcode
+```
+
+---
+
+## `audit` — scan for usernames and secrets
+
+Read-only pre-publish check over `raw/`, `wiki/`, and `site/`. It reports
+matches; it does not edit files.
+
+```bash
+python3 -m llmwiki audit
+python3 -m llmwiki audit --path site --json
+python3 -m llmwiki audit --fail-on-findings
+```
+
+| Flag | What |
+|---|---|
+| `--path PATH` | File or directory to scan (repeatable). Default: `raw/ wiki/ site/`. |
+| `--username NAME` | Username to search for. Default: `redaction.real_username` or `$USER`. |
+| `--json` | Emit a machine-readable report. |
+| `--fail-on-findings` | Exit 1 when anything is found (publish gate). |
+
+Findings are grouped as `username`, `secret` (built-in token patterns),
+or `pattern` (user `redaction.extra_patterns`). Matched text is masked
+in the preview.
 
 ---
 
@@ -340,6 +474,7 @@ round-trip semantics when a candidate lives inside a vault.
 python3 -m llmwiki synthesize --check            # probe the backend
 python3 -m llmwiki synthesize --estimate         # cost preview, no API calls
 python3 -m llmwiki synthesize --force            # re-synth everything
+python3 -m llmwiki synthesize --coalesce-only    # deterministic cleanup, no LLM
 python3 -m llmwiki synthesize                    # real run
 ```
 
@@ -350,6 +485,7 @@ python3 -m llmwiki synthesize                    # real run
 | `--check` | Probe backend availability + exit (0 if reachable). |
 | `--force` | Ignore state, re-synth every source. |
 | `--estimate` | Print cached-vs-fresh token + dollar estimate (#50). |
+| `--coalesce-only` | Merge low-signal sessions into cluster pages; no backend call. |
 
 Backend is picked from `synthesis.backend` in `sessions_config.json`
 (`dummy` by default, `ollama` for local, future `anthropic`). See

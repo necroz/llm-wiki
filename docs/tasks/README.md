@@ -35,10 +35,10 @@ unrelated code.
 
 Optional follow-ups, not carded yet:
 
-- **09 — Coalesce-only hook.** The Stop hook runs `sync` but not
-  `synthesize`, so new low-signal sessions are not merged until someone
-  runs synthesis. Add `llmwiki synthesize --coalesce-only` and call it
-  from `scripts/zcode_sync_hook.sh`.
+- **09 — Coalesce-only hook.** Done: `llmwiki synthesize --coalesce-only`
+  runs without an LLM backend, and `llmwiki zcode autosync --coalesce`
+  runs it after sync. `llmwiki zcode install --coalesce` enables it in
+  the scheduled hook/timer.
 - **10 — Seed page cleanup.** Eight seed pages (`concepts/*`,
   `entities/*`, `overview`) produce stale-content warnings. Archive them
   or refresh `last_updated`.

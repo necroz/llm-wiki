@@ -8,7 +8,8 @@ color-coded badge rendered as HTML. Ages are bucketed into:
 - ``fresh-red``    — updated > ``yellow_days`` ago
 - ``fresh-unknown`` — no resolvable timestamp OR clock skew (future)
 
-Thresholds can be overridden via ``config.json``::
+Thresholds can be overridden in the layered config (``config.json`` or
+``config.local.json``)::
 
     {
       "freshness": {
@@ -26,26 +27,20 @@ the build host cannot move pages across buckets by accident.
 from __future__ import annotations
 
 import html
-import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
 from llmwiki import REPO_ROOT
+from llmwiki.config import resolve_config
 
 DEFAULT_GREEN_DAYS = 14
 DEFAULT_YELLOW_DAYS = 60
 
 
 def load_freshness_config(repo_root: Path = REPO_ROOT) -> tuple[int, int]:
-    """Return ``(green_days, yellow_days)`` from ``config.json`` or defaults."""
-    candidate = repo_root / "config.json"
-    if not candidate.exists():
-        return DEFAULT_GREEN_DAYS, DEFAULT_YELLOW_DAYS
-    try:
-        data = json.loads(candidate.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return DEFAULT_GREEN_DAYS, DEFAULT_YELLOW_DAYS
+    """Return ``(green_days, yellow_days)`` from the layered config."""
+    data = resolve_config(repo_root)
     fresh = data.get("freshness") or {}
     try:
         green = int(fresh.get("green_days", DEFAULT_GREEN_DAYS))
