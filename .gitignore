@@ -74,6 +74,8 @@ dist-site/
 .llmwiki-dream-state.json
 .llmwiki-batch-state.json
 .llmwiki-quarantine.json
+# OS lock files guarding the state files above (llmwiki/lock.py).
+.llmwiki-*.lock
 
 # v1.0 (#160): multi-agent skill mirrors are derived from .claude/skills/
 # by `llmwiki install-skills`. The canonical source ships with the repo;

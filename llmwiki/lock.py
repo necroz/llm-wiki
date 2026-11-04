@@ -13,9 +13,39 @@ block anything: the OS lock disappears with the process that held it.
 from __future__ import annotations
 
 import os
+import tempfile
 import time
 from pathlib import Path
 from typing import IO, Optional
+
+
+def lock_path_for(state_file: Path) -> Path:
+    """Lock file guarding ``state_file``: same directory, ``.lock`` suffix."""
+    state_file = Path(state_file)
+    return state_file.with_name(state_file.name + ".lock")
+
+
+def atomic_write_text(path: Path, text: str) -> None:
+    """Write ``text`` so readers see either the old or the new file, never half.
+
+    The temp file gets a unique name in the target directory, so two
+    writers never share it and ``os.replace`` stays on one filesystem.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(tmp_name, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
 
 
 class LockTimeout(RuntimeError):

@@ -19,6 +19,7 @@ from typing import Any, Iterable, Optional
 
 from llmwiki import REPO_ROOT
 from llmwiki.adapters import REGISTRY, discover_adapters
+from llmwiki.lock import FileLock, atomic_write_text, lock_path_for
 from llmwiki.quarantine import add_entry as _quarantine_add
 
 DEFAULT_STATE_FILE = REPO_ROOT / ".llmwiki-state.json"
@@ -300,8 +301,9 @@ def save_state(path: Path, state: dict[str, Any]) -> None:
     # `_meta` (dict) and `_counters` (dict) sentinel keys. The old
     # `dict[str, float]` annotation lied to type-checkers and to the
     # multi-agent review that flagged it.
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+    # Atomic: concurrent Stop-hook syncs read this file while another
+    # run writes it; a torn read used to reset state to {}.
+    atomic_write_text(path, json.dumps(state, indent=2, sort_keys=True))
 
 
 # ─── .llmwikiignore ───────────────────────────────────────────────────────
@@ -1390,6 +1392,7 @@ def convert_all(
     include_current: bool = False,
     force: bool = False,
     dry_run: bool = False,
+    lock_timeout: float = 600,
 ) -> int:
     """Main entry: convert new sessions across all enabled adapters.
 
@@ -1397,8 +1400,52 @@ def convert_all(
     plus gitignored ``config.json`` / ``config.local.json`` overrides.
     Pass an explicit path to load exactly one file (programmatic callers
     and tests).
+
+    Runs under an OS file lock next to ``state_file`` so concurrent
+    syncs (one Stop-hook per open session, plus timers) serialise
+    instead of racing on the state file. If the lock stays busy for
+    ``lock_timeout`` seconds the run is skipped with exit code 0: the
+    run holding the lock, or the next one, picks the sessions up.
     """
-    config = load_config(config_file) if config_file is not None else load_config_layered()
+    kwargs = dict(
+        adapters=adapters,
+        out_dir=out_dir,
+        state_file=state_file,
+        config_file=config_file,
+        ignore_file=ignore_file,
+        since=since,
+        project=project,
+        include_current=include_current,
+        force=force,
+        dry_run=dry_run,
+    )
+    if dry_run:
+        return _convert_all_unlocked(**kwargs)
+    lock = FileLock(lock_path_for(state_file), timeout=lock_timeout)
+    if not lock.acquire():
+        print(
+            f"skip: another sync is running ({lock.path})", file=sys.stderr
+        )
+        return 0
+    try:
+        return _convert_all_unlocked(**kwargs)
+    finally:
+        lock.release()
+
+
+def _convert_all_unlocked(
+    adapters: list[str] | None = None,
+    out_dir: Path = DEFAULT_OUT_DIR,
+    state_file: Path = DEFAULT_STATE_FILE,
+    config_file: Optional[Path] = None,
+    ignore_file: Path = DEFAULT_IGNORE_FILE,
+    since: Optional[str] = None,
+    project: Optional[str] = None,
+    include_current: bool = False,
+    force: bool = False,
+    dry_run: bool = False,
+) -> int:
+    config =load_config(config_file) if config_file is not None else load_config_layered()
     state = {} if force else load_state(state_file, adapter_names=list(REGISTRY.keys()))
     redact = Redactor(config)
     ignore = IgnoreMatcher.from_file(ignore_file)

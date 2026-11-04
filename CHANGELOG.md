@@ -47,6 +47,8 @@ Versions below 1.0 are pre-production — API and file formats may change.
 - **OpenAI-compatible backend retries only transient errors** — `_post_chat` no longer retries 400/401/403/404/422 (it raises immediately with the status and the first 200 characters of the body), and a 400 caused by `chat_template_kwargs` is retried once without that field, so strict OpenAI-compatible servers no longer pay three rejected attempts per page.
 - **`_sync_project_sessions` preserves manual notes** — the generated session list on project pages is now wrapped in `<!-- sessions:auto:start/end -->` markers and only the text between them is rewritten, so hand-edited lines in `## Sessions` survive `llmwiki synthesize`.
 - **`synthesize --force` with an unavailable backend no longer wipes synth state** — the early return used to save the empty `--force` state; it now leaves the on-disk state untouched.
+- **Concurrent `sync` / `synthesize` runs no longer race on state files** — `convert_all` and `synthesize_new_sessions` now take an OS file lock next to their state file (`.llmwiki-state.json.lock`, `.llmwiki-synth-state.json.lock`) and wait up to `lock_timeout` (600 s) before skipping cleanly; both state files are written atomically (temp file + `os.replace`). Previously several Stop-hook syncs at once could read a half-written state file, fall back to `{}`, and re-process the whole corpus — for synthesis that meant paying for every page again.
+- **No private project names or internal hosts in examples** — docs, CLI help, and test fixtures use placeholder projects (`demo_project`, `other-app`) and a loopback `base_url`.
 
 ## [1.3.82] — 2026-04-30
 

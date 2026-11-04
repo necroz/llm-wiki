@@ -21,12 +21,14 @@ import hashlib
 import json
 import os
 import re
+import sys
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
 from llmwiki import REPO_ROOT
+from llmwiki.lock import FileLock, atomic_write_text, lock_path_for
 # #py-m1 (#587) / #arch-h5 (#610): import directly from _frontmatter
 # instead of via build.py. The build module pulls in 145+ transitive
 # imports; the parser sits cleanly in _frontmatter.py with no deps.
@@ -172,9 +174,11 @@ def _load_state(state_file: Optional[Path] = None) -> dict[str, float]:
 
 
 def _save_state(state: dict[str, float], state_file: Optional[Path] = None) -> None:
-    target = _resolve_state_file(state_file)
-    target.write_text(
-        json.dumps(state, indent=2, sort_keys=True), encoding="utf-8"
+    # Atomic: a torn read resets state to {} and re-synthesizes the whole
+    # corpus — real LLM calls, not just extra disk work.
+    atomic_write_text(
+        _resolve_state_file(state_file),
+        json.dumps(state, indent=2, sort_keys=True),
     )
 
 
@@ -1172,6 +1176,74 @@ def _build_source_page(
 
 
 def synthesize_new_sessions(
+    backend: Optional[BaseSynthesizer] = None,
+    raw_dir: Optional[Path] = None,
+    wiki_sources_dir: Optional[Path] = None,
+    dry_run: bool = False,
+    force: bool = False,
+    log_path: Optional[Path] = None,
+    state_file: Optional[Path] = None,
+    max_workers: int = 1,
+    coalesce_low_signal: bool = False,
+    coalesce_min_group: int = 3,
+    coalesce_window: str = "all",
+    lock_skip_patterns: tuple[str, ...] | list[str] | None = None,
+    coalesce_only: bool = False,
+    strip_unresolved_wikilinks: bool = True,
+    lock_timeout: float = 600,
+) -> dict[str, Any]:
+    """Run synthesis under an OS lock next to the synth state file.
+
+    Two runs at once (nightly timer + manual run, or autosync coalescing)
+    would both pick the same new sessions, pay for them twice, and race
+    on the state file. If the lock stays busy for ``lock_timeout``
+    seconds the run is skipped: the summary has ``locked: True`` and no
+    errors. ``dry_run`` writes nothing and takes no lock. See
+    :func:`_synthesize_new_sessions_unlocked` for the summary shape.
+    """
+    kwargs = dict(
+        backend=backend,
+        raw_dir=raw_dir,
+        wiki_sources_dir=wiki_sources_dir,
+        dry_run=dry_run,
+        force=force,
+        log_path=log_path,
+        state_file=state_file,
+        max_workers=max_workers,
+        coalesce_low_signal=coalesce_low_signal,
+        coalesce_min_group=coalesce_min_group,
+        coalesce_window=coalesce_window,
+        lock_skip_patterns=lock_skip_patterns,
+        coalesce_only=coalesce_only,
+        strip_unresolved_wikilinks=strip_unresolved_wikilinks,
+    )
+    if dry_run:
+        return _synthesize_new_sessions_unlocked(**kwargs)
+    lock = FileLock(
+        lock_path_for(_resolve_state_file(state_file)), timeout=lock_timeout
+    )
+    if not lock.acquire():
+        print(
+            f"skip: another synthesize is running ({lock.path})",
+            file=sys.stderr,
+        )
+        return {
+            "total_scanned": 0,
+            "new_files": 0,
+            "synthesized": 0,
+            "coalesced": 0,
+            "skipped": 0,
+            "errors": [],
+            "backend": getattr(backend, "name", "") if backend else "",
+            "locked": True,
+        }
+    try:
+        return _synthesize_new_sessions_unlocked(**kwargs)
+    finally:
+        lock.release()
+
+
+def _synthesize_new_sessions_unlocked(
     backend: Optional[BaseSynthesizer] = None,
     raw_dir: Optional[Path] = None,
     wiki_sources_dir: Optional[Path] = None,
