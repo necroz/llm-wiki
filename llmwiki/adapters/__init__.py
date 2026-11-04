@@ -11,10 +11,10 @@ parse them into a stream of records. Adapters register themselves on import.
         ...
 
 Core adapters (always loaded):
-    claude_code, codex_cli, zcode
+    claude_code, codex_cli, opencode, zcode
 
 Contrib adapters (loaded on demand via --adapter flag):
-    chatgpt, copilot_chat, copilot_cli, cursor, gemini_cli, obsidian, opencode
+    chatgpt, copilot_chat, copilot_cli, cursor, gemini_cli, obsidian
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ REGISTRY_ALIASES: dict[str, str] = {}
 # Contrib adapters that can be loaded on demand.
 CONTRIB_ADAPTERS = {
     "chatgpt", "copilot_chat", "copilot_cli",
-    "cursor", "gemini_cli", "obsidian", "opencode",
+    "cursor", "gemini_cli", "obsidian",
 }
 
 
@@ -97,6 +97,7 @@ def discover_adapters() -> None:
     from llmwiki.adapters import (
         claude_code,  # noqa: F401
         codex_cli,  # noqa: F401
+        opencode,  # noqa: F401
         zcode,  # noqa: F401
     )
 

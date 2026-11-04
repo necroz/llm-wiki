@@ -1,26 +1,15 @@
-"""OpenCode / OpenClaw adapter (v1.1 · #43).
+"""OpenCode / OpenClaw adapter.
 
-OpenCode (sst/opencode) and OpenClaw (the community fork) are open-source
-terminal AI coding agents. They write session transcripts to the
-platform-specific app config directory:
+OpenCode V2 stores sessions in a live SQLite database.  The llmwiki
+exporter (``llmwiki opencode export``) writes a Claude-style JSONL corpus
+under ``~/.llmwiki/opencode/<project-slug>/<session-id>.jsonl``; this
+adapter reads that corpus.  Legacy OpenCode/OpenClaw JSONL directories
+are still supported for existing installations.
 
-- macOS:   ~/Library/Application Support/opencode/sessions/
-           ~/Library/Application Support/openclaw/sessions/
-- Linux:   ~/.config/opencode/sessions/
-           ~/.config/openclaw/sessions/
-- Windows: %APPDATA%/opencode/sessions/
-           %APPDATA%/openclaw/sessions/
-
-Session files are `*.jsonl` (one JSON object per line) with a schema
-similar enough to Claude Code that the shared renderer in
-``llmwiki.convert`` works after a light normalization pass.
-
-The adapter registers as available when either `opencode/` or
-`openclaw/` session-store directory exists. Per-record normalization
-happens in ``normalize_records()`` which maps OpenCode's top-level
-``role`` / ``content`` fields onto the Claude-style
-``{type: user|assistant, message: {role: ..., content: ...}}`` shape
-that the renderer expects.
+Session files are `*.jsonl` (one JSON object per line).  Exported records
+already use the Claude-style shape, so the default pass-through
+``normalize_records()`` is correct for them.  Legacy records with a
+top-level ``role`` / ``content`` are normalized on the fly.
 """
 
 from __future__ import annotations
@@ -39,6 +28,9 @@ class OpenCodeAdapter(BaseAdapter):
     SUPPORTED_SCHEMA_VERSIONS = ["v1"]
 
     DEFAULT_ROOTS = [
+        # Primary: llmwiki's OpenCode V2 export corpus
+        Path.home() / ".llmwiki" / "opencode",
+        # Legacy OpenCode / OpenClaw JSONL stores
         # macOS
         Path.home() / "Library" / "Application Support" / "opencode" / "sessions",
         Path.home() / "Library" / "Application Support" / "openclaw" / "sessions",
@@ -62,9 +54,21 @@ class OpenCodeAdapter(BaseAdapter):
     def session_store_path(self):  # type: ignore[override]
         return self.roots
 
-    # #496: is_available() inherited from BaseAdapter — temp instance
-    # reads self.session_store_path (returns self.roots = DEFAULT_ROOTS
-    # when no config override).
+    @classmethod
+    def is_available(cls) -> bool:
+        """Available when at least one configured root contains a session."""
+        try:
+            instance = cls()
+        except Exception:
+            return False
+        roots = instance.session_store_path
+        if isinstance(roots, Path):
+            roots = [roots]
+        for root in roots:
+            path = Path(root).expanduser()
+            if path.exists() and any(path.rglob("*.jsonl")):
+                return True
+        return False
 
     def discover_sessions(self) -> list[Path]:
         """Return every .jsonl session file under every configured root."""

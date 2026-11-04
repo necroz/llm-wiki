@@ -6,15 +6,15 @@ from pathlib import Path
 
 import pytest
 
-from llmwiki.adapters.contrib.opencode import OpenCodeAdapter
+from llmwiki.adapters.opencode import OpenCodeAdapter
 
 
 # ─── Adapter registration ─────────────────────────────────────────────
 
 
 def test_adapter_registered():
-    from llmwiki.adapters import REGISTRY, discover_all
-    discover_all()
+    from llmwiki.adapters import REGISTRY, discover_adapters
+    discover_adapters()
     assert "opencode" in REGISTRY
 
 
@@ -25,6 +25,8 @@ def test_adapter_has_schema_versions():
 def test_adapter_has_default_roots_for_all_platforms():
     roots = OpenCodeAdapter.DEFAULT_ROOTS
     root_strs = [str(r) for r in roots]
+    # llmwiki export corpus is the primary source
+    assert roots[0] == Path.home() / ".llmwiki" / "opencode"
     # macOS
     assert any("Library/Application Support/opencode" in r for r in root_strs)
     # Linux XDG
@@ -230,3 +232,14 @@ def test_is_available_false_when_no_paths():
     # We can't guarantee this without a user install; just assert the call succeeds
     result = OpenCodeAdapter.is_available()
     assert isinstance(result, bool)
+
+
+def test_is_available_requires_a_jsonl_file(tmp_path: Path, monkeypatch):
+    store = tmp_path / "opencode"
+    store.mkdir()
+    monkeypatch.setattr(OpenCodeAdapter, "DEFAULT_ROOTS", [store])
+
+    assert OpenCodeAdapter.is_available() is False
+
+    (store / "session-1.jsonl").write_text("{}\n", encoding="utf-8")
+    assert OpenCodeAdapter.is_available() is True

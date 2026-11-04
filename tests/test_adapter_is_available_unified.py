@@ -31,7 +31,7 @@ for mod in (
     "llmwiki.adapters.contrib.cursor",
     "llmwiki.adapters.contrib.gemini_cli",
     "llmwiki.adapters.contrib.obsidian",
-    "llmwiki.adapters.contrib.opencode",
+    "llmwiki.adapters.opencode",
     "llmwiki.adapters.contrib.chatgpt",
 ):
     importlib.import_module(mod)
@@ -64,16 +64,17 @@ def test_contrib_property_pattern_still_works():
 
 
 def test_six_contrib_adapters_inherit_base_is_available():
-    """The 6 adapters whose duplicate is_available() was removed must
+    """The adapters whose duplicate is_available() was removed must
     now resolve to BaseAdapter.is_available (no per-class shadow).
 
     Excluded:
     - copilot_cli — kept its specialised override (COPILOT_HOME)
+    - opencode — requires a non-empty JSONL export corpus
     - chatgpt — intentionally returns False unconditionally (opt-in
       only, requires explicit config)
     """
     inherited = ("codex_cli", "copilot-chat", "cursor", "gemini_cli",
-                 "obsidian", "opencode")
+                 "obsidian")
     for name in inherited:
         if name not in REGISTRY:
             continue
@@ -82,6 +83,22 @@ def test_six_contrib_adapters_inherit_base_is_available():
             f"{name} re-shadows is_available — should inherit from base "
             f"after #496 cleanup"
         )
+
+
+def test_opencode_requires_non_empty_export_corpus(tmp_path, monkeypatch):
+    """opencode must not activate on an empty export directory."""
+    if "opencode" not in REGISTRY:
+        pytest.skip("opencode not registered")
+    cls = REGISTRY["opencode"]
+    store = tmp_path / "opencode"
+    store.mkdir()
+    monkeypatch.setattr(cls, "DEFAULT_ROOTS", [store])
+
+    assert cls.is_available.__func__ is not BaseAdapter.is_available.__func__
+    assert cls.is_available() is False
+
+    (store / "session.jsonl").write_text("{}\n", encoding="utf-8")
+    assert cls.is_available() is True
 
 
 def test_chatgpt_intentional_disabled_default_preserved():
