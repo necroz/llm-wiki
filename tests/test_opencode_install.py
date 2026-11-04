@@ -98,6 +98,17 @@ def test_install_plugin_escapes_paths_with_spaces(tmp_path):
     assert f'"{repo_root}"' in text
 
 
+def test_install_plugin_handles_async_spawn_errors(tmp_path):
+    install.install_plugin(
+        home=tmp_path,
+        python_exe="/venv/bin/python",
+        repo_root=tmp_path,
+    )
+
+    text = install.plugin_path(home=tmp_path).read_text(encoding="utf-8")
+    assert 'child.once("error"' in text or 'child.on("error"' in text
+
+
 def test_install_all_returns_plugin_messages(tmp_path):
     messages = install.install_all(
         home=tmp_path,

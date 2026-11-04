@@ -1130,7 +1130,7 @@ def build_parser() -> argparse.ArgumentParser:
     sync.add_argument("--force", action="store_true", help="Ignore state file, reconvert everything")
     sync.add_argument(
         "--dry-run", action="store_true",
-        help="Preview conversions without writing raw/ or refreshing the ZCode export",
+        help="Preview conversions without writing raw/ or refreshing the ZCode/OpenCode exports",
     )
     sync.add_argument(
         "--zcode-export", action=argparse.BooleanOptionalAction, default=True,

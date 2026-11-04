@@ -16,11 +16,11 @@ the export corpus or a legacy session store contains a `.jsonl` file.
 
 ## Session store
 
-OpenCode V2:
-
-- **Linux:** `~/.local/share/opencode/opencode.db`
-- **macOS:** `~/Library/Application Support/opencode/opencode.db`
-- **Windows:** `%APPDATA%\opencode\opencode.db`
+OpenCode V2 stores its database in the path reported by
+`opencode debug paths` → `db`. On this Linux checkout that is
+`~/.local/share/opencode/opencode.db`; use the `db` line from that command
+on macOS and Windows as well (typically the same `.local/share/opencode`
+location on macOS and `%USERPROFILE%\.local\share\opencode` on Windows).
 
 The exporter writes:
 
@@ -84,12 +84,20 @@ OpenCode server.
 
 ## Enable or disable
 
-The adapter fires automatically when the export corpus has sessions. To
-disable it explicitly:
+The adapter fires automatically when the export corpus has sessions.
+`opencode.enabled: false` stops the automatic export refresh:
 
 ```jsonc
 // sessions_config.json
 { "opencode": { "enabled": false } }
+```
+
+It does **not** remove an existing export corpus from conversion. To
+exclude OpenCode from a sync entirely, list the adapters explicitly
+without it:
+
+```bash
+llmwiki sync --adapter claude_code zcode --no-opencode-export
 ```
 
 ## Output layout

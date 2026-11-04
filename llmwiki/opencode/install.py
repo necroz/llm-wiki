@@ -75,6 +75,9 @@ export default Plugin.define({{
               stdio: "ignore",
             }},
           )
+          child.once("error", () => {{
+            // Autosync failures must never take down the OpenCode server.
+          }})
           child.unref()
         }} catch {{
           // Never break the OpenCode server because autosync could not start.

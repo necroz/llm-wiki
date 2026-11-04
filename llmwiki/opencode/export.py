@@ -21,6 +21,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
@@ -204,7 +205,11 @@ def load_state(path: Path) -> dict[str, Any]:
 
 def save_state(path: Path, state: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    os.close(descriptor)
+    temporary = Path(temporary_name)
     try:
         temporary.write_text(
             json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
@@ -446,7 +451,11 @@ def _safe_filename(value: str) -> str:
 
 def _write_jsonl(path: Path, records: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    os.close(descriptor)
+    temporary = Path(temporary_name)
     try:
         with temporary.open("w", encoding="utf-8", newline="\n") as handle:
             for record in records:
@@ -612,6 +621,7 @@ def run_export(
         and not dry_run
         and project_text is None
         and since_ms is None
+        and stats["total_sessions"] > 0
     ):
         stale_ids = sorted(set(sessions_state) - seen_sessions)
         for session_id in stale_ids:

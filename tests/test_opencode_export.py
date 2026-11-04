@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -320,6 +322,51 @@ def test_session_to_records_maps_user_assistant_and_tool(tmp_path: Path) -> None
     )
 
 
+def test_session_to_records_keeps_tool_only_assistant_turn(
+    tmp_path: Path,
+) -> None:
+    db = make_db(tmp_path)
+    con = sqlite3.connect(db)
+    con.row_factory = sqlite3.Row
+    _session(con, "ses-tool", "/home/test/Projects/demo", title="Tool only")
+    _message(
+        con,
+        "m-tool",
+        "ses-tool",
+        0,
+        "assistant",
+        T0,
+        {
+            "time": {"created": T0},
+            "content": [
+                {
+                    "type": "tool",
+                    "id": "call-tool",
+                    "name": "read",
+                    "state": {
+                        "status": "completed",
+                        "input": {"path": "a.py"},
+                        "content": [{"type": "text", "text": "print(1)"}],
+                    },
+                }
+            ],
+        },
+    )
+    con.commit()
+    try:
+        session = con.execute(
+            "select * from session_v2 where id = 'ses-tool'"
+        ).fetchone()
+        records = export.session_to_records(con, session)
+    finally:
+        con.close()
+
+    assert records[0]["type"] == "init"
+    assert records[1]["type"] == "assistant"
+    assert records[1]["message"]["content"][0]["type"] == "tool_use"
+    assert records[2]["message"]["content"][0]["tool_use_id"] == "call-tool"
+
+
 def test_session_to_records_returns_empty_for_no_conversation(tmp_path: Path) -> None:
     con = sqlite3.connect(make_db(tmp_path))
     con.row_factory = sqlite3.Row
@@ -419,6 +466,52 @@ def test_run_export_prunes_stale_sessions(tmp_path: Path) -> None:
     assert stats["stale"] == 1
     assert stats["stale_deleted"] == 1
     assert not stale.exists()
+
+
+def test_run_export_does_not_prune_when_database_has_no_sessions(
+    tmp_path: Path,
+) -> None:
+    db = make_db(tmp_path)
+    out = tmp_path / "jsonl"
+    export.run_export(db, out)
+    stale = out / "other" / "ses-old.jsonl"
+    assert stale.is_file()
+
+    con = sqlite3.connect(db)
+    con.execute("delete from session_message")
+    con.execute("delete from session_v2")
+    con.commit()
+    con.close()
+
+    stats = export.run_export(db, out)
+
+    assert stats["total_sessions"] == 0
+    assert stats["stale_deleted"] == 0
+    assert stale.is_file()
+
+
+def test_write_jsonl_uses_distinct_temp_files(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "session.jsonl"
+    seen: list[str] = []
+    barrier = threading.Barrier(2)
+    real_replace = export.os.replace
+
+    def replace(src, dst):
+        seen.append(Path(src).name)
+        barrier.wait(timeout=5)
+        real_replace(src, dst)
+
+    monkeypatch.setattr(export.os, "replace", replace)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [
+            pool.submit(export._write_jsonl, path, [{"i": index}])
+            for index in (1, 2)
+        ]
+        for future in futures:
+            future.result()
+
+    assert len(set(seen)) == 2
 
 
 def test_run_export_dry_run_writes_nothing(tmp_path: Path) -> None:
