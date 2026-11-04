@@ -645,10 +645,13 @@ def cmd_opencode_install(args: argparse.Namespace) -> int:
     from llmwiki.opencode.install import install_all
 
     try:
+        build = bool(getattr(args, "build", False)) and not bool(
+            getattr(args, "no_build", False)
+        )
         messages = install_all(
             python_exe=getattr(args, "python_exe", None),
             repo_root=getattr(args, "repo_root", None) or REPO_ROOT,
-            build=not bool(getattr(args, "no_build", False)),
+            build=build,
             dry_run=bool(getattr(args, "dry_run", False)),
             force=bool(getattr(args, "force", False)),
         )
@@ -1479,6 +1482,10 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="llmwiki checkout used as the plugin working directory (default: this repo)",
+    )
+    opencode_install.add_argument(
+        "--build", action="store_true",
+        help="rebuild site/ after each autosync (default: off)",
     )
     opencode_install.add_argument(
         "--no-build", action="store_true", help="do not rebuild site/"

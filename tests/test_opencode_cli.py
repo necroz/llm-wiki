@@ -52,6 +52,12 @@ def test_parser_opencode_install():
     assert args.dry_run is True
     assert args.force is True
     assert args.no_build is True
+    assert args.build is False
+
+
+def test_parser_opencode_install_build_opt_in():
+    args = cli.build_parser().parse_args(["opencode", "install", "--build"])
+    assert args.build is True
 
 
 def test_maybe_export_skips_when_disabled(monkeypatch):
