@@ -90,12 +90,24 @@ def test_cli_graph_engine_graphify_accepted():
 
 
 def test_pyproject_has_graph_extra():
-    import tomllib
-
     from llmwiki import REPO_ROOT
 
-    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    extras = data["project"]["optional-dependencies"]
+    content = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+    try:
+        import tomllib
+    except ModuleNotFoundError:
+        # Python < 3.11 has no stdlib TOML parser. Fall back to the
+        # presence check the task card prescribed; the project still
+        # supports Python 3.9.
+        assert "graph = [" in content
+        assert "all = [" in content
+        assert content.count("graphifyy") >= 2
+        assert content.count("matplotlib") >= 2
+        assert content.count("scipy") >= 2
+        return
+
+    extras = tomllib.loads(content)["project"]["optional-dependencies"]
     for name in ("graph", "all"):
         joined = " ".join(extras[name])
         assert "graphifyy" in joined, f"{name} extra lacks graphifyy"
