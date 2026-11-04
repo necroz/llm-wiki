@@ -52,6 +52,11 @@ def _autosync_command(python_exe: str, *, build: bool, coalesce: bool = False) -
     return command
 
 
+def _cmd_escape(text: str) -> str:
+    """Escape ``%`` for a .cmd file, where ``%name%`` expands as a variable."""
+    return text.replace("%", "%%")
+
+
 def _hook_command(
     python_exe: str, *, build: bool, coalesce: bool = False
 ) -> str:
@@ -273,12 +278,16 @@ def install_windows_task(
     command = _autosync_command(py, build=build, coalesce=coalesce)
     script = (
         "@echo off\r\n"
-        f'cd /d "{root}"\r\n'
-        f'{command} >> "{log_path}" 2>&1\r\n'
+        f'cd /d "{_cmd_escape(str(root))}"\r\n'
+        f'{_cmd_escape(command)} >> "{_cmd_escape(str(log_path))}" 2>&1\r\n'
     )
+    # The task runs the wrapper, not python: the wrapper sets the working
+    # directory and appends to the log. Inside the /TR value schtasks
+    # wants inner quotes escaped as \" — so a path with spaces
+    # (C:\Users\John Doe\...) stays one argument.
     task_command = (
         f'schtasks /Create /F /SC DAILY /ST {hour:02d}:{minute:02d} '
-        f'/TN "llmwiki-zcode-autosync" /TR "{command}"'
+        f'/TN "llmwiki-zcode-autosync" /TR "\\"{cmd_path}\\""'
     )
     if dry_run:
         return [f"windows: would write {cmd_path}", f"windows: {task_command}"]

@@ -110,6 +110,68 @@ def test_install_windows_task_writes_cmd_and_prints_schtasks(tmp_path):
     assert any("schtasks" in message.lower() for message in messages)
 
 
+def _schtasks_line(messages: list[str]) -> str:
+    return next(message for message in messages if "schtasks" in message.lower())
+
+
+def test_windows_task_runs_the_wrapper_not_python_directly(tmp_path):
+    # The wrapper does `cd /d` and appends to autosync.log; a task that
+    # runs python inline loses both.
+    messages = install.install_windows_task(
+        home=tmp_path, python_exe=r"C:\venv\python.exe", repo_root=tmp_path
+    )
+
+    cmd_path = tmp_path / ".llmwiki" / "zcode" / "autosync.cmd"
+    line = _schtasks_line(messages)
+    assert f'/TR "\\"{cmd_path}\\""' in line
+    assert "-m llmwiki" not in line
+
+
+def test_windows_task_quotes_paths_with_spaces(tmp_path):
+    home = tmp_path / "John Doe"
+    messages = install.install_windows_task(
+        home=home,
+        python_exe=r"C:\Program Files\Python312\python.exe",
+        repo_root=tmp_path / "my repo",
+    )
+
+    cmd_path = home / ".llmwiki" / "zcode" / "autosync.cmd"
+    # schtasks needs the inner quotes escaped as \" inside the /TR value;
+    # the old `/TR ""C:\Program Files\..."..."` split into separate args.
+    assert f'/TR "\\"{cmd_path}\\""' in _schtasks_line(messages)
+    assert '/TR ""' not in _schtasks_line(messages)
+
+    script = cmd_path.read_text(encoding="utf-8")
+    assert f'cd /d "{tmp_path / "my repo"}"' in script
+    assert '"C:\\Program Files\\Python312\\python.exe" -m llmwiki' in script
+
+
+def test_windows_wrapper_escapes_percent_signs(tmp_path):
+    # In a .cmd file `%name%` expands as a variable; a literal % must be %%.
+    home = tmp_path / "100%home"
+    install.install_windows_task(
+        home=home, python_exe=r"C:\venv\python.exe", repo_root=tmp_path / "a%b"
+    )
+
+    script = (home / ".llmwiki" / "zcode" / "autosync.cmd").read_text(
+        encoding="utf-8"
+    )
+    assert "a%%b" in script
+    assert "100%%home" in script
+    assert "a%b" not in script.replace("%%", "")
+
+
+def test_windows_task_dry_run_prints_same_schtasks_and_writes_nothing(tmp_path):
+    messages = install.install_windows_task(
+        home=tmp_path, python_exe=r"C:\venv\python.exe", repo_root=tmp_path,
+        dry_run=True,
+    )
+
+    cmd_path = tmp_path / ".llmwiki" / "zcode" / "autosync.cmd"
+    assert f'/TR "\\"{cmd_path}\\""' in _schtasks_line(messages)
+    assert not cmd_path.exists()
+
+
 def test_install_dispatch_none_only_installs_hook(tmp_path):
     messages = install.install_all(
         scheduler="none",
