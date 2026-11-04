@@ -30,6 +30,7 @@ def test_synth_state_is_isolated(tmp_path):
     from llmwiki.synth import pipeline
 
     assert pipeline.STATE_FILE.parent == tmp_path
+    assert pipeline._resolve_state_file() == tmp_path / "synth-state.json"
 
 
 def test_sync_project_sessions_preserves_manual_notes(tmp_path):
