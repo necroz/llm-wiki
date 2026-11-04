@@ -74,6 +74,7 @@ python3 -m llmwiki sync --vault ~/my-vault --allow-overwrite
 python3 -m llmwiki sync --force
 python3 -m llmwiki sync --dry-run
 python3 -m llmwiki sync --adapter zcode --no-zcode-export
+python3 -m llmwiki sync --adapter opencode --no-opencode-export
 ```
 
 ### Flags
@@ -85,9 +86,11 @@ python3 -m llmwiki sync --adapter zcode --no-zcode-export
 | `--project SUBSTRING` | Filter by project-slug substring. |
 | `--include-current` | Include sessions < 60 min old (default skips live ones). |
 | `--force` | Ignore the mtime state file, reconvert everything. |
-| `--dry-run` | Preview conversions; does not write `raw/`, refresh the ZCode export, or auto-build. |
+| `--dry-run` | Preview conversions; does not write `raw/`, refresh the ZCode/OpenCode exports, or auto-build. |
 | `--zcode-export` / `--no-zcode-export` | Refresh ZCode's JSONL corpus before converting (default: on when the database exists). |
 | `--zcode-db PATH` | ZCode database path. Default: `~/.zcode/cli/db/db.sqlite`. |
+| `--opencode-export` / `--no-opencode-export` | Refresh OpenCode's JSONL corpus before converting (default: on when the database exists). |
+| `--opencode-db PATH` | OpenCode database path. Default: `~/.local/share/opencode/opencode.db`. |
 | `--auto-build` / `--no-auto-build` | Rebuild `site/` after sync (default: on). |
 | `--auto-lint` / `--no-auto-lint` | Run `lint` after sync (default: on). |
 | `--vault PATH` | Vault-overlay mode — write new pages inside the given Obsidian / Logseq vault instead of `wiki/`. See [`guides/existing-vault.md`](../guides/existing-vault.md). |
@@ -280,6 +283,82 @@ python3 -m llmwiki zcode install --scheduler windows --no-build
 | `--no-hook` | Skip the ZCode Stop hook. |
 | `--dry-run` | Print changes only. |
 | `--force` | Replace an existing autosync hook. |
+
+---
+
+## `opencode` — export the OpenCode V2 session store
+
+OpenCode V2 keeps sessions in a live SQLite database
+(`~/.local/share/opencode/opencode.db`). This command writes an
+incremental, Claude-style JSONL corpus under `~/.llmwiki/opencode/`.
+`llmwiki sync` runs the same export automatically when the database
+exists and the `opencode` adapter is selected.
+
+```bash
+python3 -m llmwiki opencode export
+python3 -m llmwiki opencode export --project demo --dry-run
+python3 -m llmwiki opencode export --since 2026-09-01
+python3 -m llmwiki opencode export --include-subagents
+```
+
+### `opencode export` flags
+
+| Flag | What |
+|---|---|
+| `--db PATH` | OpenCode database. Default: `~/.local/share/opencode/opencode.db`. |
+| `--out-dir DIR` | JSONL output. Default: `~/.llmwiki/opencode/`. |
+| `--state-file PATH` | Incremental state. Default: `<out-dir>/.export-state.json`. |
+| `--since YYYY-MM-DD` | Only sessions updated on or after this date. |
+| `--project SUBSTR` | Case-insensitive project path or slug filter. |
+| `--project-root DIR` | Treat this directory as a project root (repeatable). |
+| `--include-subagents` | Include child sessions. Off by default. |
+| `--keep-stale` | Keep JSONL for sessions deleted from the database. |
+| `--strict` | Exit 1 if any session fails, even when others exported. |
+| `--dry-run` | Print counters without writing files. |
+
+The export is read-only against OpenCode's database and idempotent:
+`session_v2.time_updated` is the incremental key.
+
+### `opencode autosync`
+
+Portable scheduler entry point. It uses the shared OS-level lock, so
+concurrent `session.idle` events cannot overlap.
+
+```bash
+python3 -m llmwiki opencode autosync
+python3 -m llmwiki opencode autosync --build
+```
+
+| Flag | What |
+|---|---|
+| `--project SUBSTR` | Export/convert one project substring. |
+| `--build` | Rebuild `site/` after conversion. |
+| `--lock-timeout SECONDS` | Wait for another autosync. Default: 600. |
+| `--log PATH` | Log file. Default: `~/.llmwiki/opencode/autosync.log`. |
+| `--quiet` | Write only to the log. |
+
+### `opencode install`
+
+Writes the OpenCode server plugin that runs autosync on `session.idle`:
+
+```text
+~/.config/opencode/plugins/llmwiki-autosync/index.ts
+```
+
+```bash
+python3 -m llmwiki opencode install --dry-run
+python3 -m llmwiki opencode install
+python3 -m llmwiki opencode install --no-build --force
+```
+
+| Flag | What |
+|---|---|
+| `--python PATH` | Interpreter for the plugin command. Default: current. |
+| `--repo-root PATH` | llmwiki checkout used as the plugin working directory. |
+| `--build` | Rebuild `site/` after each autosync (default: off). |
+| `--no-build` | Explicitly disable rebuilds. |
+| `--dry-run` | Print the path without writing. |
+| `--force` | Replace an existing plugin file. |
 
 ---
 

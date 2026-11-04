@@ -35,7 +35,7 @@ Different agents write their transcripts to different locations. The adapter reg
 | Claude Code | `~/.claude/projects/<project>/<uuid>.jsonl` | `claude_code.py` |
 | Codex CLI | `~/.codex/sessions/` | `codex_cli.py` (stub in v0.1) |
 | Gemini CLI | `~/.gemini/` (TBD) | `gemini_cli.py` (planned) |
-| OpenCode | `~/.opencode/` (TBD) | `opencode.py` (planned) |
+| OpenCode | `~/.local/share/opencode/opencode.db` → `~/.llmwiki/opencode/` | `opencode.py` |
 
 The CLI auto-detects which adapter(s) to run. Override with `--adapter <name>`.
 
@@ -44,7 +44,9 @@ The CLI auto-detects which adapter(s) to run. Override with `--adapter <name>`.
 Run from inside the repo:
 
 ```bash
-python3 -m llmwiki sync           # convert new .jsonl → raw/sessions/*.md
+python3 -m llmwiki sync           # export ZCode/OpenCode + convert .jsonl → raw/sessions/*.md
+python3 -m llmwiki opencode autosync  # OpenCode V2 SQLite → JSONL → markdown
+python3 -m llmwiki opencode install   # install the session.idle autosync plugin
 python3 -m llmwiki build          # compile site/ from raw/ + wiki/
 python3 -m llmwiki serve          # local HTTP server on 127.0.0.1:8765
 python3 -m llmwiki init           # scaffold raw/, wiki/, site/ directories

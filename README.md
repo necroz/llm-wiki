@@ -356,6 +356,31 @@ llmwiki zcode autosync --build      # run one cycle manually
 
 See [ZCODE.md](ZCODE.md) for details.
 
+### OpenCode
+
+OpenCode V2 also stores sessions in SQLite
+(`~/.local/share/opencode/opencode.db`). Export once, then sync:
+
+```bash
+source .venv/bin/activate
+llmwiki opencode export
+llmwiki sync
+```
+
+`llmwiki sync` refreshes the OpenCode JSONL corpus automatically when the
+OpenCode database exists. To install the OpenCode `session.idle` plugin
+that runs autosync after each finished turn:
+
+```bash
+llmwiki opencode install --dry-run   # inspect
+llmwiki opencode install             # write the plugin
+llmwiki opencode autosync --build    # run one cycle manually
+```
+
+The plugin lives at
+`~/.config/opencode/plugins/llmwiki-autosync/index.ts`. See
+[docs/adapters/opencode.md](docs/adapters/opencode.md) for details.
+
 ## For maintainers
 
 Running the project? The governance scaffold lives under [`docs/maintainers/`](docs/maintainers) and is loaded by a dedicated skill:
@@ -455,7 +480,7 @@ For a daily / weekly cron-style sync, schedule `llmwiki sync` directly via your 
 
 ```bash
 llmwiki init                    # scaffold raw/ wiki/ site/ + seed nav files
-llmwiki sync                    # export ZCode + convert .jsonl → markdown (auto-build/lint if configured)
+llmwiki sync                    # export ZCode/OpenCode + convert .jsonl → markdown (auto-build/lint if configured)
 llmwiki build                   # compile static HTML + AI exports
 llmwiki serve                   # local HTTP server on 127.0.0.1:8765
 llmwiki adapters                # list available adapters + configured state (v1.0)
@@ -464,6 +489,9 @@ llmwiki audit                   # scan for usernames/secrets before publishing
 llmwiki zcode export            # export ZCode's SQLite store to JSONL
 llmwiki zcode autosync          # portable export → convert → build
 llmwiki zcode install           # Stop hook + systemd/launchd/Task Scheduler
+llmwiki opencode export         # export OpenCode's SQLite store to JSONL
+llmwiki opencode autosync       # portable export → convert → build
+llmwiki opencode install        # session.idle autosync plugin
 llmwiki graph                   # build knowledge graph (v0.2)
 llmwiki lint                    # 16-rule wiki lint (v1.2)
 llmwiki export <format>         # AI-consumable exports (v0.4)
@@ -489,7 +517,7 @@ one-click wrappers (`sync.sh`/`.bat`, `build.sh`/`.bat`, `serve.sh`/`.bat`,
 | [Gemini CLI](https://ai.google.dev/gemini-api) | `llmwiki.adapters.gemini_cli` | 🧪 Beta — layout TBC | v0.5 |
 | [Copilot Chat](https://github.com/features/copilot) | `llmwiki.adapters.copilot_chat` | 🧪 Beta | v0.9 |
 | [Copilot CLI](https://github.com/features/copilot) | `llmwiki.adapters.copilot_cli` | 🧪 Beta | v0.9 |
-| OpenCode / OpenClaw | — | ⏸ Deferred | — |
+| [OpenCode](https://github.com/sst/opencode) / OpenClaw | `llmwiki.adapters.opencode` | ✅ Production (V2 SQLite export) | v1.4 |
 
 Adding a new agent is [one small file](docs/framework.md) — subclass `BaseAdapter`, declare `SUPPORTED_SCHEMA_VERSIONS`, ship a fixture + snapshot test.
 

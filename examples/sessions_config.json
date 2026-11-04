@@ -29,6 +29,11 @@
     "enabled": true
   },
 
+  "_opencode_comment": "OpenCode V2 sessions exported from ~/.local/share/opencode/opencode.db into ~/.llmwiki/opencode.",
+  "opencode": {
+    "enabled": true
+  },
+
   "truncation": {
     "tool_result_chars": 500,
     "bash_stdout_lines": 5,
