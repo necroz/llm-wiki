@@ -213,6 +213,85 @@ def _maybe_export_zcode(args: argparse.Namespace) -> None:
         )
 
 
+def _maybe_export_opencode(args: argparse.Namespace) -> None:
+    """Refresh the OpenCode JSONL corpus before a sync, when applicable.
+
+    OpenCode V2 sessions live in a live SQLite database; the llmwiki
+    adapter reads a JSONL export. Without this step ``llmwiki sync``
+    would silently miss new OpenCode sessions. The export is incremental,
+    so an unchanged store costs one read-only scan.
+
+    Failures are warnings, not sync failures: the existing JSONL corpus
+    is still usable.
+    """
+    if not getattr(args, "opencode_export", False):
+        return
+
+    try:
+        config = _load_run_config()
+    except Exception:
+        config = {}
+    opencode_cfg = config.get("opencode") if isinstance(config, dict) else None
+
+    adapters = getattr(args, "adapter", None)
+    if adapters:
+        from llmwiki.adapters import discover_adapters, resolve_adapter_name
+
+        discover_adapters()
+        selected = {resolve_adapter_name(name) for name in adapters}
+        if "opencode" not in selected:
+            return
+    elif isinstance(opencode_cfg, dict) and opencode_cfg.get("enabled") is False:
+        return
+
+    from llmwiki.opencode.export import (
+        DEFAULT_DB,
+        DEFAULT_OUT_DIR,
+        parse_since,
+        run_export,
+    )
+
+    db = Path(getattr(args, "opencode_db", None) or DEFAULT_DB).expanduser()
+    if not db.is_file():
+        return
+    out_dir = Path(DEFAULT_OUT_DIR).expanduser()
+
+    try:
+        since_ms = parse_since(getattr(args, "since", None))
+    except ValueError as exc:
+        print(f"  warning: opencode export skipped: {exc}", file=sys.stderr)
+        return
+
+    print(f"  opencode export: {db} -> {out_dir}")
+    try:
+        stats = run_export(
+            db,
+            out_dir,
+            since=since_ms,
+            project=getattr(args, "project", None),
+            include_subagents=False,
+            dry_run=bool(getattr(args, "dry_run", False)),
+        )
+    except Exception as exc:  # noqa: BLE001 - sync must survive a bad DB
+        print(f"  warning: opencode export failed: {exc}", file=sys.stderr)
+        return
+
+    print(
+        (
+            f"  opencode export (dry-run): {stats.get('exported', 0)} would change, "
+            f"{stats.get('unchanged', 0)} unchanged"
+            if getattr(args, "dry_run", False)
+            else f"  opencode export: {stats.get('exported', 0)} exported, "
+            f"{stats.get('unchanged', 0)} unchanged"
+        )
+    )
+    if stats.get("errors"):
+        print(
+            f"  warning: opencode export finished with {stats['errors']} error(s)",
+            file=sys.stderr,
+        )
+
+
 def cmd_sync(args: argparse.Namespace) -> int:
     """Convert .jsonl sessions to markdown using the enabled adapters."""
     # G-03 (#289): `sync --status` short-circuits into the status reporter.
@@ -249,6 +328,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
         state_file = vault.root / ".llmwiki-state.json"
 
     dry_run = bool(getattr(args, "dry_run", False))
+    _maybe_export_opencode(args)
     _maybe_export_zcode(args)
 
     rc = convert_all(
@@ -462,6 +542,113 @@ def cmd_zcode_install(args: argparse.Namespace) -> int:
             build=not bool(getattr(args, "no_build", False)),
             coalesce=bool(getattr(args, "coalesce", False)),
             hook=not bool(getattr(args, "no_hook", False)),
+            dry_run=bool(getattr(args, "dry_run", False)),
+            force=bool(getattr(args, "force", False)),
+        )
+    except (OSError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    for message in messages:
+        print(message)
+    return 0
+
+
+def cmd_opencode_export(args: argparse.Namespace) -> int:
+    """Export OpenCode V2's SQLite store to JSONL for the opencode adapter."""
+    if getattr(args, "opencode_command", None) != "export":
+        print("usage: llmwiki opencode export [options]", file=sys.stderr)
+        return 2
+
+    import sqlite3
+
+    from llmwiki.opencode.export import SchemaError, parse_since, run_export
+
+    try:
+        since_ms = parse_since(getattr(args, "since", None))
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        stats = run_export(
+            db_path=args.db,
+            out_dir=args.out_dir,
+            state_file=getattr(args, "state_file", None),
+            since=since_ms,
+            project=getattr(args, "project", None),
+            include_subagents=bool(getattr(args, "include_subagents", False)),
+            dry_run=bool(getattr(args, "dry_run", False)),
+            project_roots=getattr(args, "project_roots", None),
+            prune_stale=not bool(getattr(args, "keep_stale", False)),
+        )
+    except (SchemaError, sqlite3.Error, OSError, RuntimeError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    print("OpenCode export")
+    print(f"  db: {args.db}")
+    print(f"  out: {args.out_dir}")
+    print(
+        f"  sessions: {stats['total_sessions']} total, "
+        f"{stats['selected']} selected"
+    )
+    print(
+        "  skipped: "
+        f"{stats['skipped_subagents']} subagent, "
+        f"{stats['skipped_project']} project, "
+        f"{stats['skipped_since']} since"
+    )
+    print(
+        f"  exported: {stats['exported']}, unchanged: {stats['unchanged']}, "
+        f"empty: {stats['empty']}, errors: {stats['errors']}"
+    )
+    if args.dry_run:
+        print("  dry-run: no files written")
+    else:
+        print(f"  written: {stats['written']} files")
+    if stats.get("stale"):
+        print(
+            f"  stale: {stats['stale']} removed "
+            f"({stats['stale_deleted']} files deleted)"
+        )
+    if stats.get("errors") and getattr(args, "strict", False):
+        return 1
+    return 0
+
+
+def cmd_opencode_autosync(args: argparse.Namespace) -> int:
+    """Run one OpenCode autosync cycle (export → convert → optional build)."""
+    if getattr(args, "opencode_command", None) != "autosync":
+        print("usage: llmwiki opencode autosync [options]", file=sys.stderr)
+        return 2
+
+    from llmwiki.opencode.autosync import run_autosync
+
+    return run_autosync(
+        db_path=args.db,
+        out_dir=args.out_dir,
+        project=args.project,
+        build=bool(getattr(args, "build", False)),
+        lock_timeout=float(getattr(args, "lock_timeout", 600)),
+        log_path=getattr(args, "log", None),
+        quiet=bool(getattr(args, "quiet", False)),
+    )
+
+
+def cmd_opencode_install(args: argparse.Namespace) -> int:
+    """Install the OpenCode autosync plugin."""
+    if getattr(args, "opencode_command", None) != "install":
+        print("usage: llmwiki opencode install [options]", file=sys.stderr)
+        return 2
+
+    from llmwiki.opencode.install import install_all
+
+    try:
+        messages = install_all(
+            python_exe=getattr(args, "python_exe", None),
+            repo_root=getattr(args, "repo_root", None) or REPO_ROOT,
+            build=not bool(getattr(args, "no_build", False)),
             dry_run=bool(getattr(args, "dry_run", False)),
             force=bool(getattr(args, "force", False)),
         )
@@ -953,6 +1140,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to ZCode db.sqlite (default: ~/.zcode/cli/db/db.sqlite)",
     )
     sync.add_argument(
+        "--opencode-export", action=argparse.BooleanOptionalAction, default=True,
+        help="Refresh the OpenCode JSONL corpus before converting "
+             "(default: on when the OpenCode database exists; pass "
+             "--no-opencode-export to skip)",
+    )
+    sync.add_argument(
+        "--opencode-db", type=Path, default=None,
+        help="Path to OpenCode opencode.db "
+             "(default: ~/.local/share/opencode/opencode.db)",
+    )
+    sync.add_argument(
         "--auto-build", action=argparse.BooleanOptionalAction, default=True,
         help="After sync, rebuild the site when sessions_config.json's "
              "schedule.build is 'on-sync' (default: on; pass --no-auto-build to skip)",
@@ -1172,6 +1370,126 @@ def build_parser() -> argparse.ArgumentParser:
         "--force", action="store_true", help="replace an existing autosync hook"
     )
     install.set_defaults(func=cmd_zcode_install)
+
+    # opencode (OpenCode session-store integration)
+    opencode = sub.add_parser(
+        "opencode", help="OpenCode session-store export"
+    )
+    opencode_sub = opencode.add_subparsers(
+        dest="opencode_command", metavar="COMMAND"
+    )
+    opencode_export = opencode_sub.add_parser(
+        "export", help="Export ~/.local/share/opencode/opencode.db to JSONL"
+    )
+    from llmwiki.opencode.export import DEFAULT_DB as _OPENCODE_DB
+    from llmwiki.opencode.export import DEFAULT_OUT_DIR as _OPENCODE_OUT
+
+    opencode_export.add_argument(
+        "--db", type=Path, default=_OPENCODE_DB,
+        help="path to OpenCode opencode.db",
+    )
+    opencode_export.add_argument(
+        "--out-dir", type=Path, default=_OPENCODE_OUT,
+        help="JSONL output directory",
+    )
+    opencode_export.add_argument(
+        "--state-file", type=Path, default=None,
+        help="incremental state file",
+    )
+    opencode_export.add_argument(
+        "--since", default=None,
+        help="only sessions updated on/after YYYY-MM-DD",
+    )
+    opencode_export.add_argument(
+        "--project", default=None,
+        help="case-insensitive project path or slug substring",
+    )
+    opencode_export.add_argument(
+        "--project-root",
+        dest="project_roots",
+        action="append",
+        type=Path,
+        default=None,
+        help="treat this directory as a project root (repeatable)",
+    )
+    opencode_export.add_argument(
+        "--include-subagents", action="store_true",
+        help="include child/subagent sessions",
+    )
+    opencode_export.add_argument(
+        "--keep-stale", action="store_true",
+        help="do not remove JSONL for sessions deleted from the database",
+    )
+    opencode_export.add_argument(
+        "--strict", action="store_true",
+        help="exit 1 when any session fails, even if others exported",
+    )
+    opencode_export.add_argument(
+        "--dry-run", action="store_true",
+        help="show counters without writing files",
+    )
+    opencode_export.set_defaults(func=cmd_opencode_export)
+
+    opencode_autosync = opencode_sub.add_parser(
+        "autosync",
+        help="Export, convert, and optionally build (portable scheduler entry point)",
+    )
+    opencode_autosync.add_argument(
+        "--db", type=Path, default=_OPENCODE_DB,
+        help="path to OpenCode opencode.db",
+    )
+    opencode_autosync.add_argument(
+        "--out-dir", type=Path, default=_OPENCODE_OUT,
+        help="JSONL output directory",
+    )
+    opencode_autosync.add_argument(
+        "--project", default=None,
+        help="case-insensitive project path or slug substring",
+    )
+    opencode_autosync.add_argument(
+        "--build", action="store_true",
+        help="rebuild site/ after converting",
+    )
+    opencode_autosync.add_argument(
+        "--lock-timeout", type=float, default=600,
+        help="seconds to wait for another autosync (default: 600)",
+    )
+    opencode_autosync.add_argument(
+        "--log", type=Path, default=None,
+        help="log file (default: ~/.llmwiki/opencode/autosync.log)",
+    )
+    opencode_autosync.add_argument(
+        "--quiet", action="store_true",
+        help="write only to the log file",
+    )
+    opencode_autosync.set_defaults(func=cmd_opencode_autosync)
+
+    opencode_install = opencode_sub.add_parser(
+        "install",
+        help="Install the OpenCode autosync plugin",
+    )
+    opencode_install.add_argument(
+        "--python",
+        dest="python_exe",
+        default=None,
+        help="Python interpreter for the plugin command (default: current)",
+    )
+    opencode_install.add_argument(
+        "--repo-root",
+        type=Path,
+        default=None,
+        help="llmwiki checkout used as the plugin working directory (default: this repo)",
+    )
+    opencode_install.add_argument(
+        "--no-build", action="store_true", help="do not rebuild site/"
+    )
+    opencode_install.add_argument(
+        "--dry-run", action="store_true", help="print changes only"
+    )
+    opencode_install.add_argument(
+        "--force", action="store_true", help="replace an existing plugin"
+    )
+    opencode_install.set_defaults(func=cmd_opencode_install)
 
     # graph
     graph = sub.add_parser("graph", help="Build the knowledge graph (graph/graph.json + graph.html)")
