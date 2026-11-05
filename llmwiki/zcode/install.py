@@ -60,7 +60,13 @@ def _cmd_escape(text: str) -> str:
 def _hook_command(
     python_exe: str, *, build: bool, coalesce: bool = False
 ) -> str:
-    base = _autosync_command(python_exe, build=build, coalesce=coalesce)
+    # The Stop hook fires after every reply. --lock-timeout 0 skips when a
+    # cycle is already running instead of queueing a process that waits up
+    # to 600 s; the nightly timer (no flag) is the run that waits.
+    base = (
+        _autosync_command(python_exe, build=build, coalesce=coalesce)
+        + " --lock-timeout 0"
+    )
     if os.name == "nt":
         return f'start "" /B {base}'
     return f'nohup {base} >/dev/null 2>&1 &'

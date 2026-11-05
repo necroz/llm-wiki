@@ -205,3 +205,23 @@ def test_install_hook_can_enable_coalescing(tmp_path):
     data = json.loads(_hook_config(tmp_path).read_text(encoding="utf-8"))
     command = data["hooks"]["events"]["Stop"][0]["hooks"][0]["command"]
     assert "--coalesce" in command
+
+
+def test_zcode_stop_hook_skips_when_autosync_is_busy(tmp_path):
+    # A Stop hook fires after every reply; it must not queue a process
+    # that waits 600 s for the lock.
+    install.install_hook(home=tmp_path, python_exe="/venv/bin/python")
+
+    data = json.loads(_hook_config(tmp_path).read_text(encoding="utf-8"))
+    command = data["hooks"]["events"]["Stop"][-1]["hooks"][0]["command"]
+    assert "--lock-timeout 0" in command
+
+
+def test_scheduled_autosync_still_waits_for_the_lock(tmp_path):
+    # The nightly timer is the catch-up run: it should wait, not skip.
+    install.install_systemd(home=tmp_path, python_exe="/venv/bin/python", repo_root=tmp_path)
+
+    service = (tmp_path / ".config" / "systemd" / "user" / "llmwiki-zcode.service").read_text(
+        encoding="utf-8"
+    )
+    assert "--lock-timeout" not in service

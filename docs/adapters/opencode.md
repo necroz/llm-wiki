@@ -71,12 +71,18 @@ llmwiki opencode install
 ```
 
 The plugin is written to
-`~/.config/opencode/plugins/llmwiki-autosync/index.ts`. It subscribes to
-OpenCode's `session.idle` event and spawns:
+`$XDG_CONFIG_HOME/opencode/plugins/llmwiki-autosync/index.ts` (by default
+`~/.config/opencode/...`, the same directory OpenCode reads). It subscribes
+to OpenCode's `session.idle` event and spawns:
 
 ```text
-<python> -m llmwiki opencode autosync --quiet [--build]
+<python> -m llmwiki opencode autosync --quiet --lock-timeout 0 [--build]
 ```
+
+`--lock-timeout 0` makes a busy cycle a no-op: if the previous autosync is
+still running, the new one exits at once instead of waiting for the lock,
+so idle sessions never pile up waiting processes. The next idle event (or
+a scheduled run without the flag) picks up what was skipped.
 
 OpenCode watches the plugin directory and loads it automatically. The
 plugin catches spawn errors so a missing interpreter cannot break the

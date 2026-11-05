@@ -6,7 +6,8 @@ small server plugin that subscribes to ``session.idle`` and spawns
 
 The plugin is written to::
 
-    ~/.config/opencode/plugins/llmwiki-autosync/index.ts
+    $XDG_CONFIG_HOME/opencode/plugins/llmwiki-autosync/index.ts
+    (default: ~/.config/opencode/plugins/llmwiki-autosync/index.ts)
 
 OpenCode watches that directory and loads the plugin automatically.
 """
@@ -14,6 +15,7 @@ OpenCode watches that directory and loads the plugin automatically.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Optional
@@ -27,11 +29,24 @@ def _python(python_exe: Optional[Path | str]) -> str:
     return str(Path(python_exe) if python_exe is not None else Path(sys.executable))
 
 
+def _config_root(home: Optional[Path]) -> Path:
+    """OpenCode's config base: ``$XDG_CONFIG_HOME`` or ``~/.config``.
+
+    OpenCode itself resolves its config dir from ``XDG_CONFIG_HOME``, so
+    the plugin must follow it. An explicit ``home`` (tests, non-default
+    profiles) always means ``<home>/.config``.
+    """
+    if home is None:
+        xdg = os.environ.get("XDG_CONFIG_HOME", "").strip()
+        if xdg:
+            return Path(xdg).expanduser()
+    return _home(home) / ".config"
+
+
 def plugin_path(home: Optional[Path] = None) -> Path:
     """Return the user-level OpenCode plugin path."""
     return (
-        _home(home)
-        / ".config"
+        _config_root(home)
         / "opencode"
         / "plugins"
         / "llmwiki-autosync"
@@ -68,7 +83,9 @@ export default Plugin.define({{
         try {{
           const child = spawn(
             PYTHON,
-            ["-m", "llmwiki", "opencode", "autosync", "--quiet", ...BUILD_ARGS],
+            // --lock-timeout 0: if a previous cycle is still running, skip
+            // instead of leaving one waiting process per idle session.
+            ["-m", "llmwiki", "opencode", "autosync", "--quiet", "--lock-timeout", "0", ...BUILD_ARGS],
             {{
               cwd: REPO_ROOT,
               detached: true,

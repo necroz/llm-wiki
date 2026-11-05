@@ -43,6 +43,8 @@ Versions below 1.0 are pre-production — API and file formats may change.
 
 ### Fixed
 
+- **Hook-triggered autosync skips instead of queueing** — the OpenCode plugin and the ZCode Stop hook now call `autosync --lock-timeout 0`, so an idle/stop event that arrives while a cycle is running exits at once instead of leaving a python process waiting up to 600 s for the lock. Scheduled runs (systemd/launchd/Task Scheduler) still wait.
+- **`llmwiki opencode install` honours `XDG_CONFIG_HOME`** — the plugin is written to `$XDG_CONFIG_HOME/opencode/plugins/llmwiki-autosync/index.ts` when the variable is set, the same directory OpenCode loads plugins from; previously it always used `~/.config`, so OpenCode never saw the plugin on such setups.
 - **`ensure_projects_index` emits valid frontmatter** — the generated `wiki/projects/index.md` now uses `type: navigation` and `topics: [projects]` instead of `type: index` / `tags: [index, projects]`, which `frontmatter_validity` and `tags_topics_convention` reject; a plain `sync --auto-build` no longer turns a clean wiki into a lint error.
 - **`build_graphify_graph` forces overwrite of `graphify-out/graph.json`** — the bridge now passes `force=True` to `to_json`, so `llmwiki graph` replaces the saved graph after pages are deleted or coalesced instead of printing "Refusing to overwrite" and leaving stale output.
 - **`[graph]` / `[all]` extras now include `matplotlib` and `scipy`** — both are graph-pipeline runtime requirements that `graphifyy` does not declare; a fresh `pip install llmwiki[graph]` no longer leaves `llmwiki graph` crashing with `ImportError`/`ModuleNotFoundError` and falling back to the builtin engine.

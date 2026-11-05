@@ -118,3 +118,42 @@ def test_install_all_returns_plugin_messages(tmp_path):
 
     assert install.plugin_path(home=tmp_path).is_file()
     assert messages
+
+
+def test_plugin_skips_instead_of_queueing_when_autosync_is_busy(tmp_path):
+    # Every session.idle spawns a process; with the default 600 s lock wait
+    # a long run piles up one waiting python per idle session.
+    install.install_plugin(
+        home=tmp_path, python_exe="/venv/bin/python", repo_root=tmp_path
+    )
+
+    text = install.plugin_path(home=tmp_path).read_text(encoding="utf-8")
+    assert '"--lock-timeout", "0"' in text
+
+
+def test_plugin_path_honours_xdg_config_home(tmp_path, monkeypatch):
+    # OpenCode resolves its config dir from XDG_CONFIG_HOME; the plugin
+    # must land where OpenCode looks.
+    xdg = tmp_path / "xdg"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
+
+    assert install.plugin_path() == (
+        xdg / "opencode" / "plugins" / "llmwiki-autosync" / "index.ts"
+    )
+
+
+def test_plugin_path_ignores_empty_xdg_config_home(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", "")
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    assert install.plugin_path() == (
+        tmp_path / ".config" / "opencode" / "plugins" / "llmwiki-autosync" / "index.ts"
+    )
+
+
+def test_explicit_home_wins_over_xdg_config_home(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+
+    assert install.plugin_path(home=tmp_path / "h") == (
+        tmp_path / "h" / ".config" / "opencode" / "plugins" / "llmwiki-autosync" / "index.ts"
+    )

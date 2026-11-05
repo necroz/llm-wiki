@@ -342,8 +342,11 @@ python3 -m llmwiki opencode autosync --build
 Writes the OpenCode server plugin that runs autosync on `session.idle`:
 
 ```text
-~/.config/opencode/plugins/llmwiki-autosync/index.ts
+$XDG_CONFIG_HOME/opencode/plugins/llmwiki-autosync/index.ts   # default: ~/.config/opencode/...
 ```
+
+The plugin calls `opencode autosync --lock-timeout 0`, so an idle event
+that arrives while a cycle is running is skipped rather than queued.
 
 ```bash
 python3 -m llmwiki opencode install --dry-run
