@@ -1,3 +1,9 @@
+> [!IMPORTANT]
+> **This fork has moved to [necroz/sessionwiki](https://github.com/necroz/sessionwiki)** and is archived.
+> sessionwiki is the continuation of this work as its own product (ZCode and OpenCode sources, autosync, OpenAI-compatible synthesis, and more):
+> `uv tool install sessionwiki` · [Live demo](https://necroz.github.io/sessionwiki/) · [PyPI](https://pypi.org/project/sessionwiki/).
+> The original project is [Pratiyush/llm-wiki](https://github.com/Pratiyush/llm-wiki).
+
 # llmwiki
 
 > **LLM-powered knowledge base from your Claude Code, Codex CLI, Cursor, Gemini CLI, and Obsidian sessions.**
