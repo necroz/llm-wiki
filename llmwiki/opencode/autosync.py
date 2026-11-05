@@ -7,7 +7,6 @@ export/convert at the same time.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -15,20 +14,11 @@ from llmwiki import REPO_ROOT
 from llmwiki.convert import convert_all
 from llmwiki.lock import FileLock
 from llmwiki.opencode.export import DEFAULT_DB, DEFAULT_OUT_DIR, run_export
+from llmwiki.session_export import autosync_log as _log
 
 
 def _default_log_path() -> Path:
     return Path.home() / ".llmwiki" / "opencode" / "autosync.log"
-
-
-def _log(message: str, *, log_path: Path, quiet: bool) -> None:
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    line = f"{stamp} {message}"
-    with log_path.open("a", encoding="utf-8") as handle:
-        handle.write(line + "\n")
-    if not quiet:
-        print(line)
 
 
 def run_autosync(

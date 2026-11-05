@@ -16,16 +16,27 @@ The exporter is read-only and incremental.  State is keyed by
 from __future__ import annotations
 
 import json
-import os
-import re
 import sqlite3
-import subprocess
 import sys
-import tempfile
-from datetime import datetime, timezone
-from functools import lru_cache
 from pathlib import Path
 from typing import Any, Sequence
+
+from llmwiki.session_export import (  # shared SQLite → JSONL plumbing
+    SchemaError,  # noqa: F401 - part of this module's API
+    as_int as _as_int,
+    connect_readonly,
+    delete_export_file as _delete_export_file,
+    iso_from_ms,
+    load_state,
+    parse_since,  # noqa: F401 - part of this module's API
+    row_get as _row_get,
+    safe_filename as _safe_filename,
+    save_state,
+    usage_from_tokens as _usage,
+)
+from llmwiki.session_export import project_slug_for_directory as _project_slug
+from llmwiki.session_export import validate_schema as _validate_schema
+from llmwiki.session_export import write_jsonl as _write_jsonl
 
 DEFAULT_DB = Path.home() / ".local/share/opencode/opencode.db"
 DEFAULT_OUT_DIR = Path.home() / ".llmwiki" / "opencode"
@@ -50,31 +61,6 @@ REQUIRED_COLUMNS = {
     },
 }
 
-_PROJECT_SLUG_RE = re.compile(r"[^A-Za-z0-9._-]")
-
-
-class SchemaError(RuntimeError):
-    """Raised when the OpenCode database schema is not the one we expect."""
-
-
-@lru_cache(maxsize=512)
-def _git_toplevel(directory: str) -> Path | None:
-    """Return the git work-tree root for ``directory``, or ``None``."""
-    try:
-        proc = subprocess.run(
-            ["git", "-C", directory, "rev-parse", "--show-toplevel"],
-            capture_output=True,
-            text=True,
-            timeout=2,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if proc.returncode != 0:
-        return None
-    text = proc.stdout.strip()
-    return Path(text) if text else None
-
-
 def project_slug_for_directory(
     directory: str,
     home: Path | None = None,
@@ -83,165 +69,15 @@ def project_slug_for_directory(
     """Map an OpenCode working directory to a stable project slug.
 
     OpenCode sessions usually live under ``~/Projects/<name>`` (including
-    nested worktrees), so the first component under that root is the
-    project.  Configured roots and the git top-level are fallbacks for
-    other layouts.
+    nested worktrees); see :func:`llmwiki.session_export.project_slug_for_directory`
+    for the fallbacks.
     """
-    home = Path(home or Path.home())
-    raw = str(directory or "").strip()
-    if not raw:
-        return "unknown"
-
-    path = Path(raw).expanduser()
-    try:
-        path = path.resolve()
-    except OSError:
-        pass
-
-    def relative_parts(root: Path) -> tuple[str, ...] | None:
-        try:
-            return path.relative_to(root).parts
-        except ValueError:
-            return None
-
-    parts = relative_parts(home / "Projects")
-    if parts:
-        name = parts[0]
-    else:
-        name = ""
-        for configured in project_roots or ():
-            root = Path(configured).expanduser()
-            try:
-                root = root.resolve()
-            except OSError:
-                pass
-            configured_parts = relative_parts(root)
-            if configured_parts:
-                name = configured_parts[0]
-                break
-        if not name:
-            git_root = _git_toplevel(str(path))
-            if git_root is not None:
-                name = git_root.name
-        if not name:
-            parts = relative_parts(home)
-            name = parts[0] if parts and len(parts) == 1 else path.name
-
-    if not name or name in {".", ".."}:
-        return "unknown"
-    slug = _PROJECT_SLUG_RE.sub("_", name).lstrip(".")
-    return slug or "unknown"
-
-
-def iso_from_ms(value: Any) -> str | None:
-    """Convert a Unix millisecond timestamp to an ISO-8601 UTC string."""
-    if value is None:
-        return None
-    try:
-        milliseconds = int(value)
-    except (TypeError, ValueError):
-        return None
-    return (
-        datetime.fromtimestamp(milliseconds / 1000, tz=timezone.utc)
-        .isoformat(timespec="milliseconds")
-        .replace("+00:00", "Z")
-    )
-
-
-def parse_since(value: str | None) -> int | None:
-    """Parse ``--since`` as YYYY-MM-DD or ISO-8601 and return epoch ms."""
-    if not value:
-        return None
-    text = str(value).strip()
-    if not text:
-        return None
-    try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError as exc:
-        raise ValueError(f"invalid --since value: {value}") from exc
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return int(parsed.timestamp() * 1000)
+    return _project_slug(directory, home, project_roots)
 
 
 def validate_schema(con: sqlite3.Connection) -> None:
     """Fail clearly when OpenCode changes the columns we depend on."""
-    tables = {
-        row[0]
-        for row in con.execute(
-            "select name from sqlite_master where type = 'table'"
-        ).fetchall()
-    }
-    missing: list[str] = []
-    for table, required in REQUIRED_COLUMNS.items():
-        if table not in tables:
-            missing.append(table)
-            continue
-        columns = {
-            row[1] for row in con.execute(f"pragma table_info({table})").fetchall()
-        }
-        missing.extend(f"{table}.{column}" for column in sorted(required - columns))
-    if missing:
-        raise SchemaError(
-            "missing required OpenCode schema columns: " + ", ".join(missing)
-        )
-
-
-def load_state(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {"version": 1, "sessions": {}}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"cannot read export state {path}: {exc}") from exc
-    if not isinstance(data, dict):
-        raise RuntimeError(f"invalid export state {path}: expected an object")
-    data.setdefault("version", 1)
-    sessions = data.setdefault("sessions", {})
-    if not isinstance(sessions, dict):
-        raise RuntimeError(f"invalid export state {path}: 'sessions' must be an object")
-    return data
-
-
-def save_state(path: Path, state: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
-    )
-    os.close(descriptor)
-    temporary = Path(temporary_name)
-    try:
-        temporary.write_text(
-            json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        os.replace(temporary, path)
-    finally:
-        if temporary.exists():
-            temporary.unlink()
-
-
-def _as_int(value: Any) -> int:
-    try:
-        return int(value or 0)
-    except (TypeError, ValueError):
-        return 0
-
-
-def _as_text(value: Any) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        return value
-    return json.dumps(value, ensure_ascii=False, default=str)
-
-
-def _row_get(row: sqlite3.Row, key: str, default: Any = None) -> Any:
-    try:
-        keys = row.keys()
-    except AttributeError:
-        return default
-    return row[key] if key in keys else default
+    _validate_schema(con, REQUIRED_COLUMNS, label="OpenCode")
 
 
 def _session_directory(
@@ -290,17 +126,6 @@ def _tool_output(state: dict[str, Any]) -> str:
     if isinstance(error, dict):
         return str(error.get("message") or "").strip()
     return ""
-
-
-def _usage(data: dict[str, Any]) -> dict[str, int]:
-    tokens = data.get("tokens") or {}
-    cache = tokens.get("cache") or {}
-    return {
-        "input_tokens": _as_int(tokens.get("input")),
-        "output_tokens": _as_int(tokens.get("output")),
-        "cache_read_input_tokens": _as_int(cache.get("read")),
-        "cache_creation_input_tokens": _as_int(cache.get("write")),
-    }
 
 
 def _model(data: dict[str, Any]) -> str:
@@ -445,52 +270,8 @@ def session_to_records(
     return [init, *records]
 
 
-def _safe_filename(value: str) -> str:
-    return re.sub(r"[^A-Za-z0-9._-]", "_", value).lstrip(".") or "session"
-
-
-def _write_jsonl(path: Path, records: list[dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
-    )
-    os.close(descriptor)
-    temporary = Path(temporary_name)
-    try:
-        with temporary.open("w", encoding="utf-8", newline="\n") as handle:
-            for record in records:
-                handle.write(
-                    json.dumps(record, ensure_ascii=False, separators=(",", ":"))
-                    + "\n"
-                )
-        os.replace(temporary, path)
-    finally:
-        if temporary.exists():
-            temporary.unlink()
-
-
 def _connect(db_path: Path) -> sqlite3.Connection:
-    path = Path(db_path).expanduser()
-    if not path.exists():
-        raise FileNotFoundError(f"OpenCode database not found: {path}")
-    con = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=30)
-    con.row_factory = sqlite3.Row
-    con.execute("pragma query_only = on")
-    con.execute("pragma busy_timeout = 30000")
-    return con
-
-
-def _delete_export_file(out_dir: Path, relative: str) -> bool:
-    """Delete one JSONL file under ``out_dir``; refuse path traversal."""
-    target = (out_dir / relative).resolve()
-    try:
-        target.relative_to(out_dir.resolve())
-    except ValueError:
-        return False
-    if target.suffix != ".jsonl" or not target.is_file():
-        return False
-    target.unlink()
-    return True
+    return connect_readonly(db_path, label="OpenCode")
 
 
 def run_export(

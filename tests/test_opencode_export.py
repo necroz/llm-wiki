@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from llmwiki import session_export
 from llmwiki.opencode import export
 
 T0 = 1_700_000_000_000
@@ -494,14 +495,14 @@ def test_write_jsonl_uses_distinct_temp_files(tmp_path: Path, monkeypatch) -> No
     path = tmp_path / "session.jsonl"
     seen: list[str] = []
     barrier = threading.Barrier(2)
-    real_replace = export.os.replace
+    real_replace = session_export.os.replace
 
     def replace(src, dst):
         seen.append(Path(src).name)
         barrier.wait(timeout=5)
         real_replace(src, dst)
 
-    monkeypatch.setattr(export.os, "replace", replace)
+    monkeypatch.setattr(session_export.os, "replace", replace)
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         futures = [

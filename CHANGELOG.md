@@ -33,6 +33,7 @@ Versions below 1.0 are pre-production — API and file formats may change.
 
 ### Changed
 
+- **ZCode and OpenCode exporters share one plumbing module** — read-only SQLite connection, schema check, incremental state, atomic JSONL writes, project-slug resolution, and the autosync log writer moved to `llmwiki/session_export.py`; each exporter keeps only its schema mapping (ZCode adds its `~/.zcode/workspace` slug rule via `extra_rule`). ZCode now writes state and JSONL through uniquely named temp files, like OpenCode already did. Export output is unchanged (verified byte-for-byte on a real 875-session ZCode store).
 - **`setup.sh` / `setup.bat` create a checkout-local `.venv`** — the installer no longer relies on system site-packages or `pip install --user` (blocked by PEP 668 on current Debian/Ubuntu and Homebrew Python). `sync.sh`, `build.sh`, `serve.sh`, and the `.bat` equivalents prefer `.venv` and fall back to system Python. The shell wrappers are executable in git again.
 - **`scripts/zcode_sync_hook.sh` is now a thin wrapper** — it calls `llmwiki zcode autosync` and no longer uses `flock` or a bash lock. Existing hook entries keep working; new installs should use `llmwiki zcode install`.
 - **README quick-start + `/wiki-all`** (#383) — document that `sync` alone only fills `raw/`; semantic wiki pages require `synthesize` or `all --with-synth`.

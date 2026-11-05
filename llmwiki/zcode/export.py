@@ -25,15 +25,28 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-import re
 import sqlite3
-import subprocess
 import sys
-from datetime import datetime, timezone
-from functools import lru_cache
 from pathlib import Path
 from typing import Any, Sequence
+
+from llmwiki.session_export import (  # shared SQLite → JSONL plumbing
+    SchemaError,
+    as_int as _as_int,
+    as_text as _as_text,
+    connect_readonly,
+    delete_export_file as _delete_export_file,
+    iso_from_ms,
+    load_state,
+    parse_since,
+    row_get as _row_get,
+    safe_filename as _safe_filename,
+    save_state,
+    usage_from_tokens as _usage,
+)
+from llmwiki.session_export import project_slug_for_directory as _project_slug
+from llmwiki.session_export import validate_schema as _validate_schema
+from llmwiki.session_export import write_jsonl as _write_jsonl
 
 DEFAULT_DB = Path.home() / ".zcode" / "cli" / "db" / "db.sqlite"
 DEFAULT_OUT_DIR = Path.home() / ".llmwiki" / "zcode"
@@ -49,33 +62,16 @@ REQUIRED_COLUMNS = {
 
 SERVICE_PART_TYPES = {"reasoning", "step-start", "step-finish", "timeline", "compaction"}
 MODEL_ONLY_VISIBILITY = {"model-only", "hidden"}
-_PROJECT_SLUG_RE = re.compile(r"[^A-Za-z0-9._-]")
-
-
-class SchemaError(RuntimeError):
-    """Raised when the ZCode database schema is not the one we expect."""
-
-
-@lru_cache(maxsize=512)
-def _git_toplevel(directory: str) -> Path | None:
-    """Return the git work-tree root for ``directory``, or ``None``.
-
-    Cached per directory string: one export run touches the same handful
-    of project paths hundreds of times.
-    """
+def _zcode_workspace_rule(path: Path, home: Path) -> str:
+    """``~/.zcode/workspace/<name>`` → ``workspace_<name>``; ``draft-*`` → ``workspace_drafts``."""
     try:
-        proc = subprocess.run(
-            ["git", "-C", directory, "rev-parse", "--show-toplevel"],
-            capture_output=True,
-            text=True,
-            timeout=2,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if proc.returncode != 0:
-        return None
-    text = proc.stdout.strip()
-    return Path(text) if text else None
+        parts = path.relative_to(home / ".zcode" / "workspace").parts
+    except ValueError:
+        return ""
+    if not parts:
+        return ""
+    workspace = "drafts" if parts[0].startswith("draft-") else parts[0]
+    return f"workspace_{workspace}"
 
 
 def project_slug_for_directory(
@@ -83,172 +79,21 @@ def project_slug_for_directory(
     home: Path | None = None,
     project_roots: Sequence[str | Path] | None = None,
 ) -> str:
-    """Map a session working directory to a stable project slug.
+    """Map a ZCode working directory to a stable project slug.
 
-    Resolution order:
-
-    1. ``~/Projects/<name>`` — top-level name, so nested worktrees group
-       under one project.
-    2. ``~/.zcode/workspace/<name>`` — ``workspace_<name>``; ``draft-*``
-       collapses into ``workspace_drafts``.
-    3. A configured project root (``zcode.project_roots`` /
-       ``--project-root``) — the first component under that root.
-    4. The git work-tree root — fixes nested directories on machines
-       whose projects live in ``~/dev``, ``~/src``, ``D:\\work``, etc.
-    5. The home-directory component or the directory basename.
+    Generic rules live in :func:`llmwiki.session_export.project_slug_for_directory`;
+    ZCode adds one: sessions under ``~/.zcode/workspace/<name>`` become
+    ``workspace_<name>``, and one-off ``draft-*`` workspaces collapse into
+    ``workspace_drafts``.
     """
-    home = Path(home or Path.home())
-    raw = str(directory or "").strip()
-    if not raw:
-        return "unknown"
-
-    path = Path(raw).expanduser()
-    try:
-        path = path.resolve()
-    except OSError:
-        pass
-
-    def relative_parts(root: Path) -> tuple[str, ...] | None:
-        try:
-            return path.relative_to(root).parts
-        except ValueError:
-            return None
-
-    parts = relative_parts(home / "Projects")
-    if parts:
-        name = parts[0]
-    else:
-        parts = relative_parts(home / ".zcode" / "workspace")
-        if parts:
-            workspace = parts[0]
-            if workspace.startswith("draft-"):
-                workspace = "drafts"
-            name = f"workspace_{workspace}"
-        else:
-            name = ""
-            for configured in project_roots or ():
-                root = Path(configured).expanduser()
-                try:
-                    root = root.resolve()
-                except OSError:
-                    pass
-                configured_parts = relative_parts(root)
-                if configured_parts:
-                    name = configured_parts[0]
-                    break
-            if not name:
-                git_root = _git_toplevel(str(path))
-                if git_root is not None:
-                    name = git_root.name
-            if not name:
-                parts = relative_parts(home)
-                name = parts[0] if parts and len(parts) == 1 else path.name
-
-    if not name or name in {".", ".."}:
-        return "unknown"
-    slug = _PROJECT_SLUG_RE.sub("_", name).lstrip(".")
-    return slug or "unknown"
-
-
-def iso_from_ms(value: Any) -> str | None:
-    """Convert a Unix millisecond timestamp to an ISO-8601 UTC string."""
-    if value is None:
-        return None
-    try:
-        milliseconds = int(value)
-    except (TypeError, ValueError):
-        return None
-    return (
-        datetime.fromtimestamp(milliseconds / 1000, tz=timezone.utc)
-        .isoformat(timespec="milliseconds")
-        .replace("+00:00", "Z")
+    return _project_slug(
+        directory, home, project_roots, extra_rule=_zcode_workspace_rule
     )
-
-
-def parse_since(value: str | None) -> int | None:
-    """Parse ``--since`` as YYYY-MM-DD or ISO-8601 and return epoch ms."""
-    if not value:
-        return None
-    text = str(value).strip()
-    if not text:
-        return None
-    try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError as exc:
-        raise ValueError(f"invalid --since value: {value}") from exc
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return int(parsed.timestamp() * 1000)
 
 
 def validate_schema(con: sqlite3.Connection) -> None:
     """Fail clearly when ZCode changes the columns we depend on."""
-    tables = {
-        row[0]
-        for row in con.execute("select name from sqlite_master where type = 'table'").fetchall()
-    }
-    missing: list[str] = []
-    for table, required in REQUIRED_COLUMNS.items():
-        if table not in tables:
-            missing.append(table)
-            continue
-        columns = {row[1] for row in con.execute(f"pragma table_info({table})").fetchall()}
-        missing.extend(f"{table}.{column}" for column in sorted(required - columns))
-    if missing:
-        raise SchemaError("missing required ZCode schema columns: " + ", ".join(missing))
-
-
-def load_state(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {"version": 1, "sessions": {}}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"cannot read export state {path}: {exc}") from exc
-    if not isinstance(data, dict):
-        raise RuntimeError(f"invalid export state {path}: expected an object")
-    data.setdefault("version", 1)
-    sessions = data.setdefault("sessions", {})
-    if not isinstance(sessions, dict):
-        raise RuntimeError(f"invalid export state {path}: 'sessions' must be an object")
-    return data
-
-
-def save_state(path: Path, state: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    try:
-        temporary.write_text(
-            json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        os.replace(temporary, path)
-    finally:
-        if temporary.exists():
-            temporary.unlink()
-
-
-def _row_get(row: sqlite3.Row, key: str, default: Any = None) -> Any:
-    try:
-        keys = row.keys()
-    except AttributeError:
-        return default
-    return row[key] if key in keys else default
-
-
-def _as_int(value: Any) -> int:
-    try:
-        return int(value or 0)
-    except (TypeError, ValueError):
-        return 0
-
-
-def _as_text(value: Any) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        return value
-    return json.dumps(value, ensure_ascii=False, default=str)
+    _validate_schema(con, REQUIRED_COLUMNS, label="ZCode")
 
 
 def _context(data: dict[str, Any]) -> tuple[str, str]:
@@ -291,17 +136,6 @@ def _file_placeholder(part: dict[str, Any]) -> str:
     mime = str(part.get("mime") or "")
     kind = "image" if mime.startswith("image/") else "file"
     return f"[{kind}: {filename}]"
-
-
-def _usage(data: dict[str, Any]) -> dict[str, int]:
-    tokens = data.get("tokens") or {}
-    cache = tokens.get("cache") or {}
-    return {
-        "input_tokens": _as_int(tokens.get("input")),
-        "output_tokens": _as_int(tokens.get("output")),
-        "cache_read_input_tokens": _as_int(cache.get("read")),
-        "cache_creation_input_tokens": _as_int(cache.get("write")),
-    }
 
 
 def _model(data: dict[str, Any]) -> str:
@@ -490,32 +324,8 @@ def session_to_records(con: sqlite3.Connection, session: sqlite3.Row) -> list[di
     return [init, *records]
 
 
-def _safe_filename(value: str) -> str:
-    return re.sub(r"[^A-Za-z0-9._-]", "_", value).lstrip(".") or "session"
-
-
-def _write_jsonl(path: Path, records: list[dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    try:
-        with temporary.open("w", encoding="utf-8", newline="\n") as handle:
-            for record in records:
-                handle.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
-        os.replace(temporary, path)
-    finally:
-        if temporary.exists():
-            temporary.unlink()
-
-
 def _connect(db_path: Path) -> sqlite3.Connection:
-    path = Path(db_path).expanduser()
-    if not path.exists():
-        raise FileNotFoundError(f"ZCode database not found: {path}")
-    con = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=30)
-    con.row_factory = sqlite3.Row
-    con.execute("pragma query_only = on")
-    con.execute("pragma busy_timeout = 30000")
-    return con
+    return connect_readonly(db_path, label="ZCode")
 
 
 def schema_version(con: sqlite3.Connection) -> int | None:
@@ -530,19 +340,6 @@ def schema_version(con: sqlite3.Connection) -> int | None:
         return int(row[0])
     except (TypeError, ValueError):
         return None
-
-
-def _delete_export_file(out_dir: Path, relative: str) -> bool:
-    """Delete one JSONL file under ``out_dir``; refuse path traversal."""
-    target = (out_dir / relative).resolve()
-    try:
-        target.relative_to(out_dir.resolve())
-    except ValueError:
-        return False
-    if target.suffix != ".jsonl" or not target.is_file():
-        return False
-    target.unlink()
-    return True
 
 
 def run_export(
