@@ -213,3 +213,5 @@ playwright-report/
 test-results/
 .playwright/
 
+# Agent working notes (superpowers plans/specs). Local scratch, not project docs.
+docs/superpowers/
